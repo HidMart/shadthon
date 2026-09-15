@@ -1,3 +1,5 @@
+import json
+
 import httpx
 
 from .exceptions import ShadAPIError
@@ -5,11 +7,7 @@ from .exceptions import ShadAPIError
 
 class ShadHTTP:
 
-    def __init__(
-        self,
-        base_url,
-        timeout=20
-    ):
+    def __init__(self, base_url, timeout=20):
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
 
@@ -26,16 +24,20 @@ class ShadHTTP:
         }
 
     async def post(self, payload):
+        body = json.dumps(
+            payload,
+            ensure_ascii=False,
+            separators=(",", ":")
+        )
 
         try:
             async with httpx.AsyncClient(
                 timeout=self.timeout
             ) as client:
-
                 response = await client.post(
                     self.base_url,
                     headers=self.headers,
-                    json=payload
+                    content=body.encode("utf-8")
                 )
 
         except httpx.HTTPError as e:
@@ -45,12 +47,12 @@ class ShadHTTP:
 
         if response.status_code != 200:
             raise ShadAPIError(
-                f"HTTP {response.status_code}: "
-                f"{response.text}"
+                f"HTTP {response.status_code}: {response.text}"
             )
 
         try:
             return response.json()
+
         except Exception:
             raise ShadAPIError(
                 "Server returned invalid JSON"
