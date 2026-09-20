@@ -1,31 +1,34 @@
 from __future__ import annotations
 
 import json
+import random
 from typing import Any
 
 import aiohttp
 
-from .crypto import (
-    aes_decrypt,
-    aes_encrypt,
-    derive_temporary_key,
-    rsa_sign,
-)
+from .crypto import Crypto, CryptoError
 from .exceptions import (
     NetworkError,
     ProtocolError,
 )
 from .session import Session
-from .utils import generate_session_id
 
 
-DEFAULT_HOSTS = (
-    "shadmessenger2.iranlms.ir",
-    "shadmessenger60.iranlms.ir",
-    "shadmessenger145.iranlms.ir",
-    "shadmessenger40.iranlms.ir",
-    "shadmessenger57.iranlms.ir",
+DC_ENDPOINT = (
+    "https://shgetdcmess.iranlms.ir/"
 )
+
+DEFAULT_API_HOSTS = (
+    "shadmessenger2.iranlms.ir",
+)
+
+DEFAULT_CLIENT = {
+    "app_name": "Main",
+    "app_version": "4.1.12",
+    "platform": "Web",
+    "package": "web.shad.ir",
+    "lang_code": "fa",
+}
 
 
 class Transport:
@@ -41,58 +44,30 @@ class Transport:
             total=timeout
         )
 
-    @property
-    def host(self) -> str:
-        return (
-            self.session.messenger_host
-            or DEFAULT_HOSTS[0]
-        )
-
-    @property
-    def url(self) -> str:
-        return f"https://{self.host}/"
-
     @staticmethod
     def client_info() -> dict[str, Any]:
-        return {
-            "app_name": "Main",
-            "app_version": "4.4.26",
-            "platform": "Web",
-            "package": "web.shad.ir",
-            "lang_code": "fa",
-        }
+        return dict(DEFAULT_CLIENT)
 
-    def build_payload(
+    def build_inner(
         self,
         method: str,
         input_data: dict[str, Any],
     ) -> dict[str, Any]:
+
         return {
             "method": method,
             "input": input_data,
             "client": self.client_info(),
         }
 
-    async def post(
+    async def _request_json(
         self,
-        payload: dict[str, Any],
+        url: str,
         *,
+        json_data: dict[str, Any] | None = None,
+        data: Any = None,
         headers: dict[str, str] | None = None,
     ) -> dict[str, Any]:
-
-        request_headers = {
-            "Content-Type":
-                "application/json",
-            "Accept":
-                "application/json, text/plain, */*",
-            "User-Agent":
-                "Shadthon/0.2.0",
-        }
-
-        if headers:
-            request_headers.update(
-                headers
-            )
 
         try:
             async with aiohttp.ClientSession(
@@ -100,9 +75,10 @@ class Transport:
             ) as http:
 
                 async with http.post(
-                    self.url,
-                    json=payload,
-                    headers=request_headers,
+                    url,
+                    json=json_data,
+                    data=data,
+                    headers=headers,
                 ) as response:
 
                     text = await response.text()
@@ -115,11 +91,10 @@ class Transport:
 
                     try:
                         result = json.loads(text)
-
                     except json.JSONDecodeError as exc:
                         raise ProtocolError(
-                            "Server returned invalid JSON: "
-                            f"{text[:500]}"
+                            "Invalid JSON response: "
+                            + text[:500]
                         ) from exc
 
                     if not isinstance(
@@ -127,7 +102,7 @@ class Transport:
                         dict,
                     ):
                         raise ProtocolError(
-                            "Server response is not a JSON object."
+                            "Server response is not an object."
                         )
 
                     return result
@@ -137,89 +112,205 @@ class Transport:
                 str(exc)
             ) from exc
 
-    async def direct(
+    async def refresh_dc_hosts(
         self,
-        method: str,
-        input_data: dict[str, Any],
-    ) -> dict[str, Any]:
+    ) -> tuple[list[str], list[str]]:
 
-        return await self.post(
-            self.build_payload(
-                method,
-                input_data,
+        try:
+            async with aiohttp.ClientSession(
+                timeout=self.timeout
+            ) as http:
+
+                async with http.get(
+                    DC_ENDPOINT
+                ) as response:
+
+                    text = await response.text()
+
+                    if response.status >= 400:
+                        raise NetworkError(
+                            f"DC server returned "
+                            f"HTTP {response.status}"
+                        )
+
+                    data = json.loads(text)
+
+        except aiohttp.ClientError as exc:
+            raise NetworkError(
+                str(exc)
+            ) from exc
+
+        except json.JSONDecodeError as exc:
+            raise ProtocolError(
+                "Invalid DC server response."
+            ) from exc
+
+        api_hosts: list[str] = []
+        websocket_hosts: list[str] = []
+
+        root = data.get(
+            "data",
+            {},
+        )
+
+        if not isinstance(root, dict):
+            root = {}
+
+        api_data = root.get(
+            "API",
+            {},
+        )
+
+        socket_data = root.get(
+            "socket",
+            {},
+        )
+
+        if isinstance(
+            api_data,
+            dict,
+        ):
+            api_hosts = [
+                str(value).strip()
+                for value in api_data.values()
+                if value
+            ]
+
+        if isinstance(
+            socket_data,
+            dict,
+        ):
+            websocket_hosts = [
+                str(value).strip()
+                for value in socket_data.values()
+                if value
+            ]
+
+        api_hosts = [
+            self._normalize_host(host)
+            for host in api_hosts
+        ]
+
+        websocket_hosts = [
+            self._normalize_ws_url(host)
+            for host in websocket_hosts
+        ]
+
+        api_hosts = [
+            host
+            for host in api_hosts
+            if host
+        ]
+
+        websocket_hosts = [
+            host
+            for host in websocket_hosts
+            if host
+        ]
+
+        if not api_hosts:
+            api_hosts = list(
+                DEFAULT_API_HOSTS
             )
+
+        self.session.api_hosts = api_hosts
+        self.session.websocket_hosts = (
+            websocket_hosts
         )
 
-    async def legacy(
-        self,
-        method: str,
-        input_data: dict[str, Any],
-    ) -> dict[str, Any]:
-
-        payload = {
-            "api_version": "3",
-            "method": method,
-            "data": input_data,
-        }
-
-        return await self.post(
-            payload,
-            headers={
-                "Origin":
-                    "https://shadweb.iranlms.ir",
-                "Referer":
-                    "https://shadweb.iranlms.ir/",
-            },
-        )
-
-    async def handshake(
-        self,
-        method: str,
-        input_data: dict[str, Any],
-    ) -> dict[str, Any]:
-
-        if not self.session.temporary_session:
-            self.session.temporary_session = (
-                generate_session_id()
+        if not self.session.messenger_host:
+            self.session.messenger_host = (
+                api_hosts[0]
             )
 
-        temporary_session = (
-            self.session.temporary_session
+        return (
+            api_hosts,
+            websocket_hosts,
         )
 
-        key = derive_temporary_key(
-            temporary_session
+    @staticmethod
+    def _normalize_host(
+        host: str,
+    ) -> str:
+
+        host = host.strip()
+
+        host = host.removeprefix(
+            "https://"
         )
 
-        inner = self.build_payload(
-            method,
-            input_data,
+        host = host.removeprefix(
+            "http://"
         )
 
-        encrypted = aes_encrypt(
-            json.dumps(
-                inner,
-                ensure_ascii=False,
-                separators=(",", ":"),
-            ),
-            key,
+        host = host.rstrip("/")
+
+        return host
+
+    @staticmethod
+    def _normalize_ws_url(
+        host: str,
+    ) -> str:
+
+        host = host.strip()
+
+        if host.startswith(
+            "ws://"
+        ) or host.startswith(
+            "wss://"
+        ):
+            return host.rstrip("/")
+
+        if host.startswith(
+            "https://"
+        ):
+            return (
+                "wss://"
+                + host[8:].rstrip("/")
+            )
+
+        if host.startswith(
+            "http://"
+        ):
+            return (
+                "ws://"
+                + host[7:].rstrip("/")
+            )
+
+        return (
+            "wss://"
+            + host.rstrip("/")
         )
 
-        payload = {
-            "api_version": "6",
-            "tmp_session":
-                temporary_session,
-            "data_enc":
-                encrypted,
-        }
+    async def ensure_hosts(
+        self,
+    ) -> None:
 
-        result = await self.post(
-            payload
-        )
+        if (
+            not self.session.api_hosts
+            or not self.session.websocket_hosts
+        ):
+            await self.refresh_dc_hosts()
 
-        return self._decode_result(
-            result,
-            key,
+    @property
+    def host(self) -> str:
+
+        if self.session.messenger_host:
+            return self.session.messenger_host
+
+        if self.session.api_hosts:
+            return random.choice(
+                self.session.api_hosts
+            )
+
+        return DEFAULT_API_HOSTS[0]
+
+    @property
+    def url(self) -> str:
+        return (
+            "https://"
+            + self.host
+            + "/"
         )
 
     async def authenticated(
@@ -230,111 +321,112 @@ class Transport:
 
         if not self.session.auth:
             raise ProtocolError(
-                "No authenticated session."
+                "No Shad auth token is configured."
             )
 
-        key = self.session.get_key()
+        await self.ensure_hosts()
 
-        if key is None:
-            raise ProtocolError(
-                "Session encryption key is missing."
-            )
+        crypto = Crypto(
+            self.session.auth
+        )
 
-        inner = self.build_payload(
+        inner = self.build_inner(
             method,
             input_data,
         )
 
-        encrypted = aes_encrypt(
-            json.dumps(
-                inner,
-                ensure_ascii=False,
-                separators=(",", ":"),
-            ),
-            key,
-            self.session.get_iv(),
+        encoded = json.dumps(
+            inner,
+            ensure_ascii=False,
+            separators=(",", ":"),
         )
 
-        signature = ""
-
-        if self.session.private_key_pem:
-            signature = rsa_sign(
-                encrypted,
-                self.session.private_key_pem,
-            )
+        encrypted = crypto.encrypt(
+            encoded
+        )
 
         payload = {
-            "api_version": "6",
+            "api_version": "5",
             "auth":
                 self.session.auth,
             "data_enc":
                 encrypted,
-            "sign":
-                signature,
         }
 
-        result = await self.post(
-            payload
+        result = await self._request_json(
+            self.url,
+            json_data=payload,
+            headers={
+                "Content-Type":
+                    "application/json",
+                "Accept":
+                    "application/json",
+            },
         )
 
-        return self._decode_result(
+        return self.decode_response(
             result,
-            key,
-        )
-
-    async def send_handshake(
-        self,
-        method: str,
-        input_data: dict[str, Any],
-    ) -> dict[str, Any]:
-        return await self.handshake(
-            method,
-            input_data,
-        )
-
-    async def send_authenticated(
-        self,
-        method: str,
-        input_data: dict[str, Any],
-    ) -> dict[str, Any]:
-        return await self.authenticated(
-            method,
-            input_data,
+            crypto,
         )
 
     @staticmethod
-    def _decode_result(
+    def decode_response(
         result: dict[str, Any],
-        key: bytes,
+        crypto: Crypto,
     ) -> dict[str, Any]:
 
-        if "data_enc" not in result:
+        status = result.get(
+            "status"
+        )
+
+        if (
+            status
+            and status != "OK"
+        ):
+            detail = result.get(
+                "status_det"
+            )
+
+            raise ProtocolError(
+                f"Shad error: "
+                f"{status}"
+                + (
+                    f" ({detail})"
+                    if detail
+                    else ""
+                )
+            )
+
+        encrypted = result.get(
+            "data_enc"
+        )
+
+        if not encrypted:
             return result
 
         try:
-            decoded = aes_decrypt(
-                result["data_enc"],
-                key,
+            decoded = crypto.decrypt(
+                encrypted
             )
 
             value = json.loads(
                 decoded
             )
 
-            if not isinstance(
-                value,
-                dict,
-            ):
-                raise ProtocolError(
-                    "Decrypted response is not a JSON object."
-                )
-
-            return value
-
-        except ProtocolError:
-            raise
-
-        except Exception as exc:
+        except (
+            CryptoError,
+            json.JSONDecodeError,
+        ) as exc:
             raise ProtocolError(
-                "Unable to decrypt server response."
+                "Unable to decrypt Shad v5 response."
             ) from exc
+
+        if not isinstance(
+            value,
+            dict,
+        ):
+            raise ProtocolError(
+                "Decrypted Shad response is not an object."
+            )
+
+        return value
