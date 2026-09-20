@@ -8,6 +8,7 @@ import aiohttp
 from .crypto import (
     aes_decrypt,
     aes_encrypt,
+    derive_temporary_key,
     rsa_sign,
 )
 from .exceptions import (
@@ -35,6 +36,7 @@ class Transport:
         timeout: int = 30,
     ):
         self.session = session
+
         self.timeout = aiohttp.ClientTimeout(
             total=timeout
         )
@@ -74,15 +76,23 @@ class Transport:
     async def post(
         self,
         payload: dict[str, Any],
+        *,
+        headers: dict[str, str] | None = None,
     ) -> dict[str, Any]:
-        headers = {
+
+        request_headers = {
             "Content-Type":
                 "application/json",
             "Accept":
                 "application/json, text/plain, */*",
             "User-Agent":
-                "Mozilla/5.0 Shadthon/0.2",
+                "Shadthon/0.2.0",
         }
+
+        if headers:
+            request_headers.update(
+                headers
+            )
 
         try:
             async with aiohttp.ClientSession(
@@ -92,22 +102,35 @@ class Transport:
                 async with http.post(
                     self.url,
                     json=payload,
-                    headers=headers,
+                    headers=request_headers,
                 ) as response:
 
                     text = await response.text()
 
                     if response.status >= 400:
                         raise NetworkError(
-                            f"HTTP {response.status}: {text[:500]}"
+                            f"HTTP {response.status}: "
+                            f"{text[:500]}"
                         )
 
                     try:
-                        return json.loads(text)
+                        result = json.loads(text)
+
                     except json.JSONDecodeError as exc:
                         raise ProtocolError(
-                            f"Invalid JSON response: {text[:500]}"
+                            "Server returned invalid JSON: "
+                            f"{text[:500]}"
                         ) from exc
+
+                    if not isinstance(
+                        result,
+                        dict,
+                    ):
+                        raise ProtocolError(
+                            "Server response is not a JSON object."
+                        )
+
+                    return result
 
         except aiohttp.ClientError as exc:
             raise NetworkError(
@@ -120,18 +143,53 @@ class Transport:
         input_data: dict[str, Any],
     ) -> dict[str, Any]:
 
-        payload = self.build_payload(
-            method,
-            input_data,
+        return await self.post(
+            self.build_payload(
+                method,
+                input_data,
+            )
         )
 
-        return await self.post(payload)
+    async def legacy(
+        self,
+        method: str,
+        input_data: dict[str, Any],
+    ) -> dict[str, Any]:
+
+        payload = {
+            "api_version": "3",
+            "method": method,
+            "data": input_data,
+        }
+
+        return await self.post(
+            payload,
+            headers={
+                "Origin":
+                    "https://shadweb.iranlms.ir",
+                "Referer":
+                    "https://shadweb.iranlms.ir/",
+            },
+        )
 
     async def handshake(
         self,
         method: str,
         input_data: dict[str, Any],
     ) -> dict[str, Any]:
+
+        if not self.session.temporary_session:
+            self.session.temporary_session = (
+                generate_session_id()
+            )
+
+        temporary_session = (
+            self.session.temporary_session
+        )
+
+        key = derive_temporary_key(
+            temporary_session
+        )
 
         inner = self.build_payload(
             method,
@@ -144,23 +202,24 @@ class Transport:
                 ensure_ascii=False,
                 separators=(",", ":"),
             ),
-            self._temporary_key(),
+            key,
         )
 
         payload = {
             "api_version": "6",
-            "tmp_session": (
-                self.session.temporary_session
-                or generate_session_id()
-            ),
-            "data_enc": encrypted,
+            "tmp_session":
+                temporary_session,
+            "data_enc":
+                encrypted,
         }
 
-        result = await self.post(payload)
+        result = await self.post(
+            payload
+        )
 
         return self._decode_result(
             result,
-            self._temporary_key(),
+            key,
         )
 
     async def authenticated(
@@ -171,10 +230,15 @@ class Transport:
 
         if not self.session.auth:
             raise ProtocolError(
-                "No authenticated session"
+                "No authenticated session."
             )
 
-        key = self._session_key()
+        key = self.session.get_key()
+
+        if key is None:
+            raise ProtocolError(
+                "Session encryption key is missing."
+            )
 
         inner = self.build_payload(
             method,
@@ -188,47 +252,55 @@ class Transport:
                 separators=(",", ":"),
             ),
             key,
+            self.session.get_iv(),
         )
 
-        sign = ""
+        signature = ""
 
         if self.session.private_key_pem:
-            sign = rsa_sign(
+            signature = rsa_sign(
                 encrypted,
                 self.session.private_key_pem,
             )
 
         payload = {
             "api_version": "6",
-            "auth": self.session.auth,
-            "data_enc": encrypted,
-            "sign": sign,
+            "auth":
+                self.session.auth,
+            "data_enc":
+                encrypted,
+            "sign":
+                signature,
         }
 
-        result = await self.post(payload)
+        result = await self.post(
+            payload
+        )
 
         return self._decode_result(
             result,
             key,
         )
 
-    def _temporary_key(self) -> bytes:
-        return b"\x00" * 32
+    async def send_handshake(
+        self,
+        method: str,
+        input_data: dict[str, Any],
+    ) -> dict[str, Any]:
+        return await self.handshake(
+            method,
+            input_data,
+        )
 
-    def _session_key(self) -> bytes:
-        if not self.session.key_hex:
-            raise ProtocolError(
-                "Session encryption key is missing"
-            )
-
-        try:
-            return bytes.fromhex(
-                self.session.key_hex
-            )
-        except ValueError as exc:
-            raise ProtocolError(
-                "Invalid session key"
-            ) from exc
+    async def send_authenticated(
+        self,
+        method: str,
+        input_data: dict[str, Any],
+    ) -> dict[str, Any]:
+        return await self.authenticated(
+            method,
+            input_data,
+        )
 
     @staticmethod
     def _decode_result(
@@ -245,7 +317,24 @@ class Transport:
                 key,
             )
 
-            return json.loads(decoded)
+            value = json.loads(
+                decoded
+            )
 
-        except Exception:
-            return result
+            if not isinstance(
+                value,
+                dict,
+            ):
+                raise ProtocolError(
+                    "Decrypted response is not a JSON object."
+                )
+
+            return value
+
+        except ProtocolError:
+            raise
+
+        except Exception as exc:
+            raise ProtocolError(
+                "Unable to decrypt server response."
+            ) from exc
