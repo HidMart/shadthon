@@ -6,7 +6,9 @@ from .crypto import (
 from .transport import Transport
 
 
-DEFAULT_BASE_URL = "https://shadmessenger36.iranlms.ir/"
+DEFAULT_BASE_URL = (
+    "https://shadmessenger36.iranlms.ir/"
+)
 
 
 class AuthManager:
@@ -60,7 +62,7 @@ class AuthManager:
 
         data = {
             "phone_number": phone_number,
-            "send_type": send_type,
+            "send_type": send_type
         }
 
         if pass_key:
@@ -80,7 +82,10 @@ class AuthManager:
 
         return result
 
-    async def sign_in(self, phone_code):
+    async def sign_in(
+        self,
+        phone_code
+    ):
         if not self.session.phone_code_hash:
             raise RuntimeError(
                 "phone_code_hash is missing"
@@ -96,7 +101,7 @@ class AuthManager:
                 "phone_code":
                     phone_code,
                 "public_key":
-                    self.session.public_key,
+                    self.session.public_key
             },
             authenticated=False
         )
@@ -106,7 +111,9 @@ class AuthManager:
             result
         )
 
-        encrypted_auth = data.get("auth")
+        encrypted_auth = data.get(
+            "auth"
+        )
 
         if not encrypted_auth:
             return result
@@ -151,7 +158,7 @@ class AuthManager:
                 "lang_code": "fa",
                 "system_version": system_version,
                 "token": token,
-                "token_type": "Firebase",
+                "token_type": "Firebase"
             },
             authenticated=True
         )
