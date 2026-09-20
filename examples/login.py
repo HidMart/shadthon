@@ -20,7 +20,7 @@ async def main():
         "Enter verification code: "
     ).strip()
 
-    await client.login(
+    result = await client.login(
         otp,
         code_info["phone_code_hash"],
     )
@@ -29,10 +29,16 @@ async def main():
         "Login completed successfully."
     )
 
-    print(
-        "User GUID:",
-        client.session.user_guid,
-    )
+    if result.user:
+        print(
+            "User GUID:",
+            result.user.guid,
+        )
+    else:
+        print(
+            "User GUID:",
+            client.session.user_guid,
+        )
 
 
 if __name__ == "__main__":
