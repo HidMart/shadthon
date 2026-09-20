@@ -6,10 +6,9 @@ from typing import Any, Awaitable, Callable
 from .auth import AuthManager
 from .exceptions import AuthenticationError
 from .models import (
-    FileInfo,
-    LoginResult,
     Message,
     Poll,
+    LoginResult,
 )
 from .session import Session
 from .transport import Transport
@@ -50,17 +49,9 @@ class Client:
             self.session_path
         )
 
-        normalized = (
-            normalize_phone(
-                phone_number
-            )
-            if phone_number
-            else None
-        )
-
-        if normalized:
+        if phone_number:
             self.session.phone_number = (
-                normalized
+                normalize_phone(phone_number)
             )
 
         if messenger_host:
@@ -136,7 +127,7 @@ class Client:
         ):
             await handler(message)
 
-    async def send_code(self) -> str:
+    async def send_code(self) -> dict:
         return await self.auth.request_code()
 
     async def login(
@@ -174,23 +165,15 @@ class Client:
             int | str | None = None,
     ) -> dict[str, Any]:
 
-        if not self.is_authenticated():
-            raise AuthenticationError(
-                "Client is not authenticated."
-            )
-
         data: dict[str, Any] = {
-            "object_guid":
-                chat_guid,
-            "rnd":
-                __import__(
-                    "random"
-                ).randint(
-                    100000000,
-                    999999999,
-                ),
-            "text":
-                text,
+            "object_guid": chat_guid,
+            "rnd": __import__(
+                "random"
+            ).randint(
+                100000000,
+                999999999,
+            ),
+            "text": text,
         }
 
         if reply_to_message_id is not None:
@@ -211,8 +194,7 @@ class Client:
     ) -> list[Message]:
 
         data: dict[str, Any] = {
-            "object_guid":
-                chat_guid,
+            "object_guid": chat_guid,
         }
 
         if middle_message_id is not None:
@@ -256,7 +238,10 @@ class Client:
                 raw=item,
             )
             for item in raw_messages
-            if isinstance(item, dict)
+            if isinstance(
+                item,
+                dict,
+            )
         ]
 
     async def get_message(
@@ -268,10 +253,10 @@ class Client:
         result = await self.call(
             "getMessagesByID",
             {
-                "object_guid":
-                    chat_guid,
-                "message_ids":
-                    [message_id],
+                "object_guid": chat_guid,
+                "message_ids": [
+                    message_id
+                ],
             },
         )
 
@@ -321,8 +306,7 @@ class Client:
         result = await self.call(
             "getPollStatus",
             {
-                "poll_id":
-                    poll_id,
+                "poll_id": poll_id,
             },
         )
 
@@ -364,8 +348,7 @@ class Client:
         return await self.call(
             "votePoll",
             {
-                "poll_id":
-                    poll_id,
+                "poll_id": poll_id,
                 "selection_index":
                     selection_index,
             },
