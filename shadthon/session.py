@@ -13,11 +13,41 @@ class Session:
     user_guid: str | None = None
     messenger_host: str | None = None
     state: str = "new"
+
     private_key_pem: str | None = None
+    public_key_pem: str | None = None
+
     temporary_session: str | None = None
+    phone_code_hash: str | None = None
+
     key_hex: str | None = None
     iv_hex: str | None = None
+
     decoded_auth: dict[str, Any] | None = None
+
+    def set_key(self, key: bytes) -> None:
+        self.key_hex = key.hex()
+
+    def set_iv(self, iv: bytes) -> None:
+        self.iv_hex = iv.hex()
+
+    def get_key(self) -> bytes | None:
+        if not self.key_hex:
+            return None
+
+        try:
+            return bytes.fromhex(self.key_hex)
+        except ValueError:
+            return None
+
+    def get_iv(self) -> bytes:
+        if not self.iv_hex:
+            return b"\x00" * 16
+
+        try:
+            return bytes.fromhex(self.iv_hex)
+        except ValueError:
+            return b"\x00" * 16
 
     def save(self, path: str | Path) -> None:
         target = Path(path)
@@ -41,7 +71,9 @@ class Session:
 
         try:
             data = json.loads(
-                target.read_text(encoding="utf-8")
+                target.read_text(
+                    encoding="utf-8"
+                )
             )
         except Exception:
             return cls()
@@ -56,7 +88,9 @@ class Session:
             "messenger_host",
             "state",
             "private_key_pem",
+            "public_key_pem",
             "temporary_session",
+            "phone_code_hash",
             "key_hex",
             "iv_hex",
             "decoded_auth",
@@ -81,8 +115,13 @@ class Session:
         self.user_guid = None
         self.messenger_host = None
         self.state = "new"
+
         self.private_key_pem = None
+        self.public_key_pem = None
+
         self.temporary_session = None
+        self.phone_code_hash = None
+
         self.key_hex = None
         self.iv_hex = None
         self.decoded_auth = None
