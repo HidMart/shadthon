@@ -1,167 +1,166 @@
-from __future__ import annotations
-
 import base64
-from typing import Any
-
+import secrets
+import string
 from Crypto.Cipher import AES
+from Crypto.Hash import SHA256
+from Crypto.PublicKey import RSA
+from Crypto.Signature import pkcs1_15
 from Crypto.Util.Padding import pad, unpad
 
 
-class CryptoError(Exception):
-    pass
+IV = b"\x00" * 16
 
 
-class Crypto:
-    def __init__(self, auth: str):
-        if not isinstance(auth, str):
-            raise CryptoError("auth must be a string")
+def auth_set(value: str) -> str:
+    result = []
 
-        if len(auth) < 32:
-            raise CryptoError(
-                "Invalid auth: auth must contain at least 32 characters."
-            )
-
-        source = (
-            auth[16:24]
-            + auth[0:8]
-            + auth[24:32]
-            + auth[8:16]
-        )
-
-        if len(source) != 32:
-            raise CryptoError("Unable to derive Shad v5 key.")
-
-        try:
-            key = "".join(
-                chr(((ord(char) - 97 + 9) % 26) + 97)
-                for char in source
-            )
-        except Exception as exc:
-            raise CryptoError(
-                "Unable to derive encryption key."
-            ) from exc
-
-        self.key = key.encode("utf-8")
-        self.iv = b"\x00" * 16
-
-        if len(self.key) != 32:
-            raise CryptoError(
-                "Derived AES key must be 32 bytes."
-            )
-
-    def encrypt(self, text: str | bytes) -> str:
-        if isinstance(text, str):
-            data = text.encode("utf-8")
+    for char in value:
+        if "a" <= char <= "z":
+            result.append(chr(((32 - (ord(char) - 97)) % 26) + 97))
+        elif "A" <= char <= "Z":
+            result.append(chr(((29 - (ord(char) - 65)) % 26) + 65))
+        elif "0" <= char <= "9":
+            result.append(chr(((13 - (ord(char) - 48)) % 10) + 48))
         else:
-            data = text
+            result.append(char)
 
-        cipher = AES.new(
-            self.key,
-            AES.MODE_CBC,
-            self.iv,
-        )
-
-        encrypted = cipher.encrypt(
-            pad(data, AES.block_size)
-        )
-
-        return base64.b64encode(
-            encrypted
-        ).decode("utf-8")
-
-    def decrypt(self, text: str) -> str:
-        try:
-            encrypted = base64.b64decode(
-                text.encode("utf-8")
-            )
-
-            cipher = AES.new(
-                self.key,
-                AES.MODE_CBC,
-                self.iv,
-            )
-
-            decrypted = cipher.decrypt(
-                encrypted
-            )
-
-            return unpad(
-                decrypted,
-                AES.block_size,
-            ).decode("utf-8")
-
-        except Exception as exc:
-            raise CryptoError(
-                "Unable to decrypt Shad response."
-            ) from exc
+    return "".join(result)
 
 
-def aes_encrypt(
-    text: str | bytes,
-    key: bytes,
-    iv: bytes | None = None,
-) -> str:
-    if isinstance(text, str):
-        text = text.encode("utf-8")
+def make_key(auth: str) -> str:
+    if len(auth) < 32:
+        raise ValueError("auth must contain at least 32 characters")
 
-    if iv is None:
-        iv = b"\x00" * 16
+    value = (
+        auth[16:24]
+        + auth[0:8]
+        + auth[24:32]
+        + auth[8:16]
+    )
+
+    result = []
+
+    for char in value:
+        if "0" <= char <= "9":
+            result.append(chr(((ord(char) - 48 + 5) % 10) + 48))
+        elif "a" <= char <= "z":
+            result.append(chr(((ord(char) - 97 + 9) % 26) + 97))
+        else:
+            result.append(char)
+
+    return "".join(result)
+
+
+def encrypt(auth: str, data: str) -> str:
+    key = make_key(auth).encode("utf-8")
 
     cipher = AES.new(
         key,
         AES.MODE_CBC,
-        iv,
+        IV
     )
 
-    return base64.b64encode(
-        cipher.encrypt(
-            pad(text, AES.block_size)
-        )
-    ).decode("utf-8")
+    encrypted = cipher.encrypt(
+        pad(data.encode("utf-8"), AES.block_size)
+    )
+
+    return base64.b64encode(encrypted).decode("utf-8")
 
 
-def aes_decrypt(
-    encoded: str,
-    key: bytes,
-    iv: bytes | None = None,
-) -> str:
-    if iv is None:
-        iv = b"\x00" * 16
+def decrypt(auth: str, data: str) -> str:
+    key = make_key(auth).encode("utf-8")
 
     cipher = AES.new(
         key,
         AES.MODE_CBC,
-        iv,
+        IV
     )
 
-    decrypted = cipher.decrypt(
-        base64.b64decode(
-            encoded.encode("utf-8")
-        )
-    )
+    decoded = base64.b64decode(data)
+
+    decrypted = cipher.decrypt(decoded)
 
     return unpad(
         decrypted,
-        AES.block_size,
+        AES.block_size
     ).decode("utf-8")
 
 
-def derive_key(
-    auth: str,
-    decoded_auth: dict[str, Any] | None = None,
-) -> tuple[bytes, bytes]:
-    crypto = Crypto(auth)
-
-    return (
-        crypto.key,
-        crypto.iv,
+def generate_tmp_session() -> str:
+    alphabet = string.ascii_lowercase
+    return "".join(
+        secrets.choice(alphabet)
+        for _ in range(32)
     )
 
 
-def decode_auth(
-    auth: str,
-) -> dict[str, Any]:
-    return {
-        "auth": auth,
-        "length": len(auth),
-    }
+def generate_rsa_keys():
+    key = RSA.generate(1024)
+
+    private_key = key.export_key(
+        format="DER",
+        pkcs=8
+    )
+
+    public_key = key.publickey().export_key(
+        format="DER"
+    )
+
+    public_b64 = base64.b64encode(
+        public_key
+    ).decode("utf-8")
+
+    pem = (
+        "-----BEGIN PUBLIC KEY-----\r\n"
+        + public_b64
+        + "\r\n-----END PUBLIC KEY-----"
+    )
+
+    pem_b64 = base64.b64encode(
+        pem.encode("utf-8")
+    ).decode("utf-8")
+
+    public_value = auth_set(pem_b64)
+
+    private_value = base64.b64encode(
+        private_key
+    ).decode("utf-8")
+
+    return public_value, private_value
+
+
+def load_private_key(private_key: str):
+    raw = base64.b64decode(private_key)
+
+    return RSA.import_key(raw)
+
+
+def sign_rsa(private_key: str, data: str) -> str:
+    key = load_private_key(private_key)
+
+    digest = SHA256.new(
+        data.encode("utf-8")
+    )
+
+    signature = pkcs1_15.new(key).sign(digest)
+
+    return base64.b64encode(
+        signature
+    ).decode("utf-8")
+
+
+def decrypt_rsa_oaep(
+    private_key: str,
+    encrypted_data: str
+) -> str:
+    key = load_private_key(private_key)
+
+    from Crypto.Cipher import PKCS1_OAEP
+
+    cipher = PKCS1_OAEP.new(key)
+
+    result = cipher.decrypt(
+        base64.b64decode(encrypted_data)
+    )
+
+    return result.decode("utf-8")
