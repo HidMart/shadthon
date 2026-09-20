@@ -4,9 +4,7 @@ import aiohttp
 from .crypto import encrypt, decrypt, auth_set, sign_rsa
 
 
-DEFAULT_DC = (
-    "https://shadmessenger36.iranlms.ir/"
-)
+DEFAULT_BASE_URL = "https://shadmessenger36.iranlms.ir/"
 
 
 class Transport:
@@ -15,15 +13,14 @@ class Transport:
         auth=None,
         private_key=None,
         tmp_session=None,
-        base_url=DEFAULT_DC
+        base_url=DEFAULT_BASE_URL
     ):
         self.auth = auth
         self.private_key = private_key
         self.tmp_session = tmp_session
-        self.base_url = base_url.rstrip("/") + "/"
-
-    async def close(self):
-        return None
+        self.base_url = (
+            base_url or DEFAULT_BASE_URL
+        ).rstrip("/") + "/"
 
     async def request(
         self,
@@ -46,27 +43,29 @@ class Transport:
         }
 
         if authenticated:
-            if not self.auth:
+            crypto_auth = self.auth
+
+            if not crypto_auth:
                 raise RuntimeError(
                     "Authentication required"
                 )
-
-            crypto_auth = self.auth
         else:
             crypto_auth = self.tmp_session
 
-        if not crypto_auth:
-            raise RuntimeError(
-                "No encryption session available"
-            )
+            if not crypto_auth:
+                raise RuntimeError(
+                    "tmp_session is missing"
+                )
+
+        encoded_inner = json.dumps(
+            inner,
+            ensure_ascii=False,
+            separators=(",", ":")
+        )
 
         data_enc = encrypt(
             crypto_auth,
-            json.dumps(
-                inner,
-                ensure_ascii=False,
-                separators=(",", ":")
-            )
+            encoded_inner
         )
 
         outer = {
@@ -89,18 +88,36 @@ class Transport:
                 self.tmp_session
             )
 
-        async with aiohttp.ClientSession() as session:
+        timeout = aiohttp.ClientTimeout(
+            total=30
+        )
+
+        async with aiohttp.ClientSession(
+            timeout=timeout
+        ) as session:
+
             async with session.post(
                 self.base_url,
                 json=outer
             ) as response:
 
-                response.raise_for_status()
+                response_text = await response.text()
 
-                result = await response.json()
+                if response.status != 200:
+                    raise RuntimeError(
+                        f"HTTP {response.status}: "
+                        f"{response_text}"
+                    )
 
-        if result.get("status") != "OK":
-            return result
+                try:
+                    result = json.loads(
+                        response_text
+                    )
+                except json.JSONDecodeError:
+                    raise RuntimeError(
+                        "Invalid JSON response: "
+                        + response_text
+                    )
 
         encrypted_response = result.get(
             "data_enc"
@@ -113,12 +130,27 @@ class Transport:
                     encrypted_response
                 )
 
-                return json.loads(decrypted)
+                parsed = json.loads(
+                    decrypted
+                )
 
-            except Exception:
-                return result
+                return parsed
 
-        if "data" in result:
-            return result["data"]
+            except Exception as error:
+                raise RuntimeError(
+                    "Could not decrypt Shad response: "
+                    + str(error)
+                ) from error
+
+        if result.get("status") != "OK":
+            return result
+
+        data = result.get("data")
+
+        if isinstance(data, dict):
+            return data
 
         return result
+
+    async def close(self):
+        return None
