@@ -1,0 +1,50 @@
+[build-system]
+requires = [
+    "setuptools>=68",
+    "wheel"
+]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "shadthon"
+version = "0.1.0"
+description = "Async Python framework for Shad Messenger"
+readme = "README.md"
+requires-python = ">=3.9"
+license = {text = "MIT"}
+
+dependencies = [
+    "aiohttp>=3.9.0",
+    "cryptography>=42.0.0"
+]
+
+authors = [
+    {name = "HidMart"}
+]
+
+keywords = [
+    "shad",
+    "shadthon",
+    "messenger",
+    "python",
+    "async"
+]
+
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Framework :: AsyncIO"
+]
+
+[project.urls]
+Homepage = "https://github.com/HidMart/shadthon"
+Repository = "https://github.com/HidMart/shadthon"
+Issues = "https://github.com/HidMart/shadthon/issues"
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+include = ["shadthon*"]
