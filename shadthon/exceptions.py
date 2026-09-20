@@ -2,31 +2,17 @@ class ShadthonError(Exception):
     pass
 
 
-class AuthenticationError(
-    ShadthonError
-):
+class AuthenticationError(ShadthonError):
     pass
 
 
-class NetworkError(
-    ShadthonError
-):
+class APIError(ShadthonError):
     pass
 
 
-class ProtocolError(
-    ShadthonError
-):
+class NetworkError(ShadthonError):
     pass
 
 
-class InvalidAuthError(
-    AuthenticationError
-):
-    pass
-
-
-class RateLimitError(
-    ShadthonError
-):
+class CryptoError(ShadthonError):
     pass
