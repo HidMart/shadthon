@@ -1,78 +1,102 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Callable, Awaitable
+from typing import Any, Awaitable, Callable
 
+from .auth import AuthManager
 from .exceptions import AuthenticationError
 from .models import (
     FileInfo,
     LoginResult,
     Message,
     Poll,
-    User,
 )
 from .session import Session
+from .transport import Transport
+from .utils import normalize_phone
 
 
-MessageHandler = Callable[[Message], Awaitable[Any]]
+MessageHandler = Callable[
+    [Message],
+    Awaitable[Any],
+]
 
 
 class Client:
+
     def __init__(
         self,
         phone_number: str | None = None,
         session_dir: str = "sessions",
         session_name: str = "default",
+        messenger_host: str | None = None,
+        timeout: int = 30,
     ):
-        self.phone_number = self._normalize_phone(phone_number)
+        self.session_dir = Path(
+            session_dir
+        )
 
-        self.session_dir = Path(session_dir)
         self.session_dir.mkdir(
             parents=True,
             exist_ok=True,
         )
 
         self.session_path = (
-            self.session_dir /
-            f"{session_name}.json"
+            self.session_dir
+            / f"{session_name}.json"
         )
 
         self.session = Session.load(
             self.session_path
         )
 
-        if self.phone_number:
-            self.session.phone_number = (
-                self.phone_number
+        normalized = (
+            normalize_phone(
+                phone_number
             )
+            if phone_number
+            else None
+        )
+
+        if normalized:
+            self.session.phone_number = (
+                normalized
+            )
+
+        if messenger_host:
+            self.session.messenger_host = (
+                messenger_host
+            )
+
+        self.transport = Transport(
+            self.session,
+            timeout=timeout,
+        )
+
+        self.auth = AuthManager(
+            self
+        )
 
         self._message_handlers: list[
             MessageHandler
         ] = []
 
-    @staticmethod
-    def _normalize_phone(
-        phone: str | None,
-    ) -> str | None:
-        if phone is None:
-            return None
+        self.save_session()
 
-        phone = (
-            phone
-            .strip()
-            .replace(" ", "")
-            .replace("-", "")
-            .replace("(", "")
-            .replace(")", "")
+    @property
+    def phone_number(self) -> str | None:
+        return self.session.phone_number
+
+    @phone_number.setter
+    def phone_number(
+        self,
+        value: str | None,
+    ) -> None:
+        self.session.phone_number = (
+            normalize_phone(value)
+            if value
+            else None
         )
-
-        if phone.startswith("+"):
-            phone = phone[1:]
-
-        if phone.startswith("0"):
-            phone = "98" + phone[1:]
-
-        return phone
 
     def save_session(self) -> None:
         self.session.save(
@@ -82,7 +106,8 @@ class Client:
     def is_authenticated(self) -> bool:
         return bool(
             self.session.auth
-            and self.session.state == "authenticated"
+            and self.session.state
+            == "authenticated"
         )
 
     def logout(self) -> None:
@@ -94,174 +119,240 @@ class Client:
         self,
         handler: MessageHandler,
     ) -> MessageHandler:
+
         self._message_handlers.append(
             handler
         )
+
         return handler
 
     async def dispatch_message(
         self,
         message: Message,
     ) -> None:
+
         for handler in list(
             self._message_handlers
         ):
             await handler(message)
 
     async def send_code(self) -> str:
-        raise AuthenticationError(
-            "Shad v6 sendCode is not implemented yet. "
-            "The exact encrypted protocol response must "
-            "be verified before sending authentication data."
-        )
+        return await self.auth.request_code()
 
     async def login(
         self,
         otp: str,
         phone_code_hash: str | None = None,
     ) -> LoginResult:
-        if not self.phone_number:
+
+        return await self.auth.login(
+            otp,
+            phone_code_hash,
+        )
+
+    async def call(
+        self,
+        method: str,
+        input_data: dict[str, Any],
+    ) -> dict[str, Any]:
+
+        if not self.is_authenticated():
             raise AuthenticationError(
-                "phone_number is required."
+                "Client is not authenticated."
             )
 
-        if not otp:
-            raise AuthenticationError(
-                "OTP code is required."
-            )
-
-        raise AuthenticationError(
-            "Shad v6 signIn is not implemented yet. "
-            "The exact encrypted protocol envelope must "
-            "be verified before authentication."
+        return await self.transport.authenticated(
+            method,
+            input_data,
         )
 
     async def send_message(
         self,
         chat_guid: str,
         text: str,
-        reply_to_message_id: int | str | None = None,
+        reply_to_message_id:
+            int | str | None = None,
     ) -> dict[str, Any]:
+
         if not self.is_authenticated():
             raise AuthenticationError(
                 "Client is not authenticated."
             )
 
-        raise NotImplementedError(
-            "Shad sendMessage transport is not implemented yet."
+        data: dict[str, Any] = {
+            "object_guid":
+                chat_guid,
+            "rnd":
+                __import__(
+                    "random"
+                ).randint(
+                    100000000,
+                    999999999,
+                ),
+            "text":
+                text,
+        }
+
+        if reply_to_message_id is not None:
+            data[
+                "reply_to_message_id"
+            ] = reply_to_message_id
+
+        return await self.call(
+            "sendMessage",
+            data,
         )
 
     async def get_messages(
         self,
         chat_guid: str,
-        middle_message_id: int | str | None = None,
+        middle_message_id:
+            int | str | None = None,
     ) -> list[Message]:
-        if not self.is_authenticated():
-            raise AuthenticationError(
-                "Client is not authenticated."
-            )
 
-        raise NotImplementedError(
-            "Shad message retrieval is not implemented yet."
+        data: dict[str, Any] = {
+            "object_guid":
+                chat_guid,
+        }
+
+        if middle_message_id is not None:
+            data[
+                "middle_message_id"
+            ] = middle_message_id
+
+        result = await self.call(
+            "getMessagesInterval",
+            data,
         )
+
+        raw_messages = result.get(
+            "messages",
+            result.get(
+                "data",
+                [],
+            ),
+        )
+
+        if not isinstance(
+            raw_messages,
+            list,
+        ):
+            return []
+
+        return [
+            Message(
+                message_id=item.get(
+                    "message_id"
+                ),
+                object_guid=item.get(
+                    "object_guid"
+                ),
+                text=item.get(
+                    "text"
+                ),
+                sender_guid=item.get(
+                    "sender_guid"
+                ),
+                raw=item,
+            )
+            for item in raw_messages
+            if isinstance(item, dict)
+        ]
 
     async def get_message(
         self,
         chat_guid: str,
         message_id: int | str,
     ) -> Message | None:
-        if not self.is_authenticated():
-            raise AuthenticationError(
-                "Client is not authenticated."
-            )
 
-        raise NotImplementedError(
-            "Shad message retrieval is not implemented yet."
+        result = await self.call(
+            "getMessagesByID",
+            {
+                "object_guid":
+                    chat_guid,
+                "message_ids":
+                    [message_id],
+            },
         )
 
-    async def send_photo(
-        self,
-        chat_guid: str,
-        file_path: str,
-        caption: str | None = None,
-    ) -> FileInfo:
-        if not self.is_authenticated():
-            raise AuthenticationError(
-                "Client is not authenticated."
-            )
-
-        raise NotImplementedError(
-            "Shad photo upload is not implemented yet."
+        messages = result.get(
+            "messages",
+            result.get(
+                "data",
+                [],
+            ),
         )
 
-    async def send_video(
-        self,
-        chat_guid: str,
-        file_path: str,
-        caption: str | None = None,
-    ) -> FileInfo:
-        if not self.is_authenticated():
-            raise AuthenticationError(
-                "Client is not authenticated."
-            )
+        if not isinstance(
+            messages,
+            list,
+        ) or not messages:
+            return None
 
-        raise NotImplementedError(
-            "Shad video upload is not implemented yet."
-        )
+        item = messages[0]
 
-    async def send_file(
-        self,
-        chat_guid: str,
-        file_path: str,
-        caption: str | None = None,
-    ) -> FileInfo:
-        if not self.is_authenticated():
-            raise AuthenticationError(
-                "Client is not authenticated."
-            )
+        if not isinstance(
+            item,
+            dict,
+        ):
+            return None
 
-        raise NotImplementedError(
-            "Shad file upload is not implemented yet."
-        )
-
-    async def upload_file(
-        self,
-        file_path: str,
-    ) -> FileInfo:
-        if not self.is_authenticated():
-            raise AuthenticationError(
-                "Client is not authenticated."
-            )
-
-        raise NotImplementedError(
-            "Shad file upload is not implemented yet."
-        )
-
-    async def download_file(
-        self,
-        file_info: FileInfo,
-        destination: str,
-    ) -> str:
-        if not self.is_authenticated():
-            raise AuthenticationError(
-                "Client is not authenticated."
-            )
-
-        raise NotImplementedError(
-            "Shad file download is not implemented yet."
+        return Message(
+            message_id=item.get(
+                "message_id"
+            ),
+            object_guid=item.get(
+                "object_guid"
+            ),
+            text=item.get(
+                "text"
+            ),
+            sender_guid=item.get(
+                "sender_guid"
+            ),
+            raw=item,
         )
 
     async def get_poll(
         self,
         poll_id: str | int,
     ) -> Poll:
-        if not self.is_authenticated():
-            raise AuthenticationError(
-                "Client is not authenticated."
-            )
 
-        raise NotImplementedError(
-            "Shad poll API is not implemented yet."
+        result = await self.call(
+            "getPollStatus",
+            {
+                "poll_id":
+                    poll_id,
+            },
+        )
+
+        data = result.get(
+            "poll",
+            result.get(
+                "data",
+                result,
+            ),
+        )
+
+        if not isinstance(
+            data,
+            dict,
+        ):
+            data = {}
+
+        return Poll(
+            poll_id=(
+                data.get("poll_id")
+                or poll_id
+            ),
+            question=data.get(
+                "question"
+            ),
+            options=data.get(
+                "options",
+                [],
+            ),
+            raw=data,
         )
 
     async def vote_poll(
@@ -269,19 +360,22 @@ class Client:
         poll_id: str | int,
         selection_index: int,
     ) -> dict[str, Any]:
+
+        return await self.call(
+            "votePoll",
+            {
+                "poll_id":
+                    poll_id,
+                "selection_index":
+                    selection_index,
+            },
+        )
+
+    async def start(self) -> None:
         if not self.is_authenticated():
             raise AuthenticationError(
                 "Client is not authenticated."
             )
 
-        raise NotImplementedError(
-            "Shad poll API is not implemented yet."
-        )
-
-    async def start(self) -> None:
-        raise NotImplementedError(
-            "Automatic update polling will be added "
-            "after the exact Shad update protocol is verified."
-        )
-
-    run = start
+    async def run(self) -> None:
+        await self.start()
