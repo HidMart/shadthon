@@ -1,18 +1,22 @@
 [build-system]
-requires = ["setuptools>=68", "wheel"]
+requires = [
+    "setuptools>=68",
+    "wheel"
+]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "shadthon"
-version = "0.2.0"
-description = "Async Python client library for Shad Messenger"
+version = "0.3.0"
+description = "Async Python framework for Shad Messenger"
 readme = "README.md"
-requires-python = ">=3.14"
+requires-python = ">=3.9"
 license = {text = "MIT"}
 
 dependencies = [
-    "aiohttp>=3.14.3",
-    "pycryptodome>=3.20.0"
+    "aiohttp>=3.9",
+    "pycryptodome>=3.20",
+    "websockets>=12,<16"
 ]
 
 [project.urls]
