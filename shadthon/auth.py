@@ -16,18 +16,10 @@ class AuthManager:
     def __init__(self, client):
         self.client = client
 
-    async def request_code(
-        self,
-    ) -> str:
-
+    async def request_code(self) -> dict:
         phone = normalize_phone(
             self.client.phone_number
         )
-
-        if not phone:
-            raise AuthenticationError(
-                "phone_number is required."
-            )
 
         self.client.session.phone_number = phone
 
@@ -39,15 +31,9 @@ class AuthManager:
             },
         )
 
-        data = result.get(
-            "data",
-            {},
-        )
+        data = result.get("data", {})
 
-        if not isinstance(
-            data,
-            dict,
-        ):
+        if not isinstance(data, dict):
             data = {}
 
         phone_code_hash = (
@@ -56,19 +42,10 @@ class AuthManager:
         )
 
         if not phone_code_hash:
-            status = result.get(
-                "status"
-            )
-
-            detail = result.get(
-                "status_det"
-            )
-
             raise AuthenticationError(
-                "Shad did not return "
-                "phone_code_hash. "
-                f"status={status!r}, "
-                f"status_det={detail!r}"
+                "Shad did not return phone_code_hash. "
+                f"status={result.get('status')!r}, "
+                f"status_det={result.get('status_det')!r}"
             )
 
         self.client.session.phone_code_hash = (
@@ -77,9 +54,11 @@ class AuthManager:
 
         self.client.save_session()
 
-        return str(
-            phone_code_hash
-        )
+        return {
+            "phone_number": phone,
+            "phone_code_hash": str(phone_code_hash),
+            "response": result,
+        }
 
     async def login(
         self,
@@ -90,11 +69,6 @@ class AuthManager:
         phone = normalize_phone(
             self.client.phone_number
         )
-
-        if not phone:
-            raise AuthenticationError(
-                "phone_number is required."
-            )
 
         if not otp:
             raise AuthenticationError(
@@ -126,26 +100,16 @@ class AuthManager:
         result = await self.client.transport.handshake(
             "signIn",
             {
-                "phone_code":
-                    str(otp),
-                "phone_number":
-                    phone,
-                "phone_code_hash":
-                    str(phone_code_hash),
-                "public_key":
-                    public_pem,
+                "phone_code": str(otp),
+                "phone_number": phone,
+                "phone_code_hash": str(phone_code_hash),
+                "public_key": public_pem,
             },
         )
 
-        data = result.get(
-            "data",
-            {},
-        )
+        data = result.get("data", {})
 
-        if not isinstance(
-            data,
-            dict,
-        ):
+        if not isinstance(data, dict):
             data = {}
 
         raw_auth = (
@@ -158,64 +122,46 @@ class AuthManager:
                 "Shad did not return authentication data."
             )
 
-        decrypted_auth = (
-            raw_auth
-        )
+        decrypted_auth = str(raw_auth)
 
         try:
-            decrypted_auth = (
-                rsa_oaep_decrypt(
-                    str(raw_auth),
-                    private_pem,
-                ).decode(
-                    "utf-8",
-                    errors="ignore",
-                )
+            decrypted_auth = rsa_oaep_decrypt(
+                str(raw_auth),
+                private_pem,
+            ).decode(
+                "utf-8",
+                errors="ignore",
             )
         except Exception:
             pass
 
-        self.client.session.auth = (
-            decrypted_auth
-        )
+        self.client.session.auth = decrypted_auth
 
         decoded = decode_auth(
             decrypted_auth
         )
 
-        self.client.session.decoded_auth = (
-            decoded
-        )
+        self.client.session.decoded_auth = decoded
 
         key, iv = derive_key(
             decrypted_auth,
             decoded,
         )
 
-        self.client.session.set_key(
-            key
-        )
+        self.client.session.set_key(key)
+        self.client.session.set_iv(iv)
 
-        self.client.session.set_iv(
-            iv
-        )
+        self.client.session.state = "authenticated"
 
-        self.client.session.state = (
-            "authenticated"
-        )
-
-        user_data = data.get(
-            "user"
-        )
+        user_data = data.get("user")
 
         user = None
 
-        if isinstance(
-            user_data,
-            dict,
-        ):
-            user = User.from_dict(
-                user_data
+        if isinstance(user_data, dict):
+            user = User.from_dict(user_data)
+
+            self.client.session.user_guid = (
+                user.guid
             )
 
         self.client.save_session()
