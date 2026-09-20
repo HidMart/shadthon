@@ -1,289 +1,207 @@
+from __future__ import annotations
+
 import base64
 import hashlib
+import json
+import secrets
+from typing import Any
 
-from cryptography.hazmat.primitives import hashes, serialization
-from cryptography.hazmat.primitives.asymmetric import padding, rsa
-from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+from Crypto.Cipher import AES, PKCS1_OAEP
+from Crypto.Hash import SHA1, SHA256
+from Crypto.PublicKey import RSA
+from Crypto.Signature import pkcs1_15
 
 
 BLOCK_SIZE = 16
 
 
-def encode_base64(data: bytes) -> str:
-    return base64.b64encode(data).decode("ascii")
-
-
-def decode_base64(data: str) -> bytes:
-    return base64.b64decode(data)
-
-
-def derive_passphrase(value: str) -> str:
-    if len(value) != 32:
-        raise ValueError(
-            "Session value must contain exactly 32 characters."
-        )
-
-    chunks = [
-        value[0:8],
-        value[8:16],
-        value[16:24],
-        value[24:32],
-    ]
-
-    reordered = (
-        chunks[2]
-        + chunks[0]
-        + chunks[3]
-        + chunks[1]
-    )
-
-    output = []
-
-    for char in reordered:
-        if "a" <= char <= "z":
-            output.append(
-                chr(
-                    ((ord(char) - ord("a") + 9) % 26)
-                    + ord("a")
-                )
-            )
-        else:
-            output.append(char)
-
-    return "".join(output)
-
-
-def decode_auth(value: str) -> str:
-    lower_source = "abcdefghijklmnopqrstuvwxyz"
-    lower_target = "zyxwvutsrqponmlkjihgfedcba"
-
-    upper_source = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
-    upper_target = "ZYXWVUTSRQPONMLKJIHGFEDCBA"
-
-    result = []
-
-    for char in value:
-        if char in lower_source:
-            index = lower_source.index(char)
-            result.append(lower_target[index])
-
-        elif char in upper_source:
-            index = upper_source.index(char)
-            result.append(upper_target[index])
-
-        elif char.isdigit():
-            result.append(
-                str((int(char) + 13) % 10)
-            )
-
-        else:
-            result.append(char)
-
-    return "".join(result)
-
-
-def derive_key(value: str) -> bytes:
-    return derive_passphrase(value).encode("utf-8")
-
-
-def generate_rsa_keys():
-    private_key = rsa.generate_private_key(
-        public_exponent=65537,
-        key_size=1024,
-    )
-
-    public_key = private_key.public_key()
-
-    public_pem = public_key.public_bytes(
-        encoding=serialization.Encoding.PEM,
-        format=serialization.PublicFormat.SubjectPublicKeyInfo,
-    )
-
-    private_pem = private_key.private_bytes(
-        encoding=serialization.Encoding.PEM,
-        format=serialization.PrivateFormat.PKCS8,
-        encryption_algorithm=serialization.NoEncryption(),
-    )
-
-    public_value = decode_auth(
-        encode_base64(public_pem)
-    )
-
-    return (
-        public_value,
-        private_pem.decode("utf-8"),
-    )
-
-
-def rsa_decrypt(
-    private_key_pem: str,
-    encrypted_value: str,
-) -> str:
-    private_key = serialization.load_pem_private_key(
-        private_key_pem.encode("utf-8"),
-        password=None,
-    )
-
-    encrypted = base64.b64decode(encrypted_value)
-
-    decrypted = private_key.decrypt(
-        encrypted,
-        padding.OAEP(
-            mgf=padding.MGF1(
-                algorithm=hashes.SHA1()
-            ),
-            algorithm=hashes.SHA1(),
-            label=None,
-        ),
-    )
-
-    return decrypted.decode("utf-8")
-
-
-def rsa_sign(
-    private_key_pem: str,
-    data: str,
-) -> str:
-    private_key = serialization.load_pem_private_key(
-        private_key_pem.encode("utf-8"),
-        password=None,
-    )
-
-    signature = private_key.sign(
-        data.encode("utf-8"),
-        padding.PKCS1v15(),
-        hashes.SHA256(),
-    )
-
-    return encode_base64(signature)
-
-
 def _pad(data: bytes) -> bytes:
     amount = BLOCK_SIZE - (len(data) % BLOCK_SIZE)
-
     return data + bytes([amount]) * amount
 
 
 def _unpad(data: bytes) -> bytes:
     if not data:
-        raise ValueError("Empty decrypted payload.")
+        raise ValueError("Empty decrypted data")
 
     amount = data[-1]
 
     if amount < 1 or amount > BLOCK_SIZE:
-        raise ValueError("Invalid padding.")
+        raise ValueError("Invalid PKCS7 padding")
 
     if data[-amount:] != bytes([amount]) * amount:
-        raise ValueError("Invalid padding.")
+        raise ValueError("Invalid PKCS7 padding")
 
     return data[:-amount]
 
 
 def aes_encrypt(
-    data: str,
+    text: str | bytes,
     key: bytes,
-    iv: bytes = None,
+    iv: bytes | None = None,
 ) -> str:
+    if isinstance(text, str):
+        data = text.encode("utf-8")
+    else:
+        data = text
+
     if iv is None:
         iv = b"\x00" * 16
 
-    cipher = Cipher(
-        algorithms.AES(key),
-        modes.CBC(iv),
-    )
+    cipher = AES.new(key, AES.MODE_CBC, iv)
+    encrypted = cipher.encrypt(_pad(data))
 
-    encryptor = cipher.encryptor()
-
-    encrypted = encryptor.update(
-        _pad(data.encode("utf-8"))
-    )
-
-    encrypted += encryptor.finalize()
-
-    return encode_base64(encrypted)
+    return base64.b64encode(encrypted).decode("ascii")
 
 
 def aes_decrypt(
-    data: str,
+    encoded: str,
     key: bytes,
-    iv: bytes = None,
+    iv: bytes | None = None,
 ) -> str:
     if iv is None:
         iv = b"\x00" * 16
 
-    encrypted = decode_base64(data)
+    encrypted = base64.b64decode(encoded)
 
-    cipher = Cipher(
-        algorithms.AES(key),
-        modes.CBC(iv),
-    )
-
-    decryptor = cipher.decryptor()
-
-    decrypted = decryptor.update(
-        encrypted
-    )
-
-    decrypted += decryptor.finalize()
+    cipher = AES.new(key, AES.MODE_CBC, iv)
+    decrypted = cipher.decrypt(encrypted)
 
     return _unpad(decrypted).decode("utf-8")
 
 
-def calculate_signature(
-    key: bytes,
-    data: str,
-) -> str:
-    raw = (
-        data.encode("utf-8")
-        + encode_base64(key).encode("utf-8")
+def generate_rsa_keypair() -> tuple[str, str]:
+    private_key = RSA.generate(1024)
+    public_key = private_key.publickey()
+
+    private_pem = private_key.export_key(
+        format="PEM"
+    ).decode("utf-8")
+
+    public_pem = public_key.export_key(
+        format="PEM"
+    ).decode("utf-8")
+
+    return private_pem, public_pem
+
+
+def rsa_oaep_decrypt(
+    encrypted_base64: str,
+    private_key_pem: str,
+) -> bytes:
+    private_key = RSA.import_key(private_key_pem)
+
+    encrypted = base64.b64decode(encrypted_base64)
+
+    cipher = PKCS1_OAEP.new(
+        private_key,
+        hashAlgo=SHA1,
     )
 
-    return hashlib.sha256(raw).hexdigest()
+    return cipher.decrypt(encrypted)
 
 
-def probe_decrypt(
-    data: str,
-    temporary_session: str,
-):
-    candidates = []
+def rsa_sign(
+    text: str | bytes,
+    private_key_pem: str,
+) -> str:
+    private_key = RSA.import_key(private_key_pem)
+
+    if isinstance(text, str):
+        data = text.encode("utf-8")
+    else:
+        data = text
+
+    digest = SHA256.new(data)
+
+    signature = pkcs1_15.new(
+        private_key
+    ).sign(digest)
+
+    return base64.b64encode(
+        signature
+    ).decode("ascii")
+
+
+def decode_auth(auth: str) -> dict[str, Any]:
+    raw = base64.b64decode(auth)
 
     try:
-        candidates.append(
-            (
-                derive_key(temporary_session),
-                b"\x00" * 16,
-            )
-        )
+        text = raw.decode("utf-8")
+        value = json.loads(text)
+
+        if isinstance(value, dict):
+            return value
     except Exception:
         pass
 
-    candidates.append(
-        (
-            temporary_session.encode("utf-8"),
-            b"\x00" * 16,
+    parts = raw.split(b"|")
+
+    result: dict[str, Any] = {
+        "raw": raw.hex()
+    }
+
+    if len(parts) >= 1:
+        result["part_0"] = parts[0].decode(
+            "utf-8",
+            errors="ignore",
         )
-    )
 
-    candidates.append(
-        (
-            hashlib.sha256(
-                temporary_session.encode("utf-8")
-            ).digest(),
-            b"\x00" * 16,
+    if len(parts) >= 2:
+        result["part_1"] = parts[1].decode(
+            "utf-8",
+            errors="ignore",
         )
-    )
 
-    for key, iv in candidates:
-        try:
-            return aes_decrypt(
-                data,
-                key,
-                iv,
-            ), key, iv
+    if len(parts) >= 3:
+        result["part_2"] = parts[2].decode(
+            "utf-8",
+            errors="ignore",
+        )
 
-        except Exception:
-            continue
+    return result
 
-    raise ValueError(
-        "Unable to decrypt server response."
-    )
+
+def derive_key(
+    auth: str,
+    decoded_auth: dict[str, Any],
+) -> tuple[bytes, bytes]:
+    candidates: list[str] = []
+
+    for key in (
+        "key",
+        "auth_key",
+        "session_key",
+        "key_hex",
+    ):
+        value = decoded_auth.get(key)
+
+        if isinstance(value, str) and value:
+            candidates.append(value)
+
+    if not candidates:
+        raw = base64.b64decode(auth)
+
+        digest = hashlib.sha256(raw).digest()
+
+        return digest[:32], b"\x00" * 16
+
+    value = candidates[0]
+
+    try:
+        key = bytes.fromhex(value)
+
+        if len(key) in (16, 24, 32):
+            return key, b"\x00" * 16
+    except ValueError:
+        pass
+
+    digest = hashlib.sha256(
+        value.encode("utf-8")
+    ).digest()
+
+    return digest[:32], b"\x00" * 16
+
+
+def random_token(length: int = 32) -> str:
+    return secrets.token_hex(length)
