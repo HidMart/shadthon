@@ -6,13 +6,13 @@ class AuthenticationError(ShadthonError):
     pass
 
 
-class APIError(ShadthonError):
-    pass
-
-
 class NetworkError(ShadthonError):
     pass
 
 
-class CryptoError(ShadthonError):
+class APIError(ShadthonError):
+    pass
+
+
+class SessionError(ShadthonError):
     pass
