@@ -4,39 +4,61 @@ from shadthon import Client
 
 
 async def main():
+    phone = input("Phone number: ").strip()
+
+    if phone.startswith("09"):
+        phone = "98" + phone[1:]
+    elif phone.startswith("+98"):
+        phone = phone[1:]
+
+    print(f"Using: {phone}")
+
     client = Client(
-        session_name="my_account"
+        phone=phone,
+        session_name="my_account",
     )
 
-    if not client.authenticated:
-        phone = input(
-            "Phone number: "
-        ).strip()
+    print("\nsendCode:")
 
-        result = await client.login(
-            phone
-        )
+    result = await client.send_code(
+        phone
+    )
 
-        print("SendCode result:")
-        print(result)
+    print(result)
 
-        code = input(
-            "SMS code: "
-        ).strip()
-
-        result = await client.verify(
-            code
-        )
-
-        print("Login result:")
-        print(result)
+    if result.get("status") != "OK":
+        print("sendCode failed")
+        return
 
     print(
-        "Authenticated:",
-        client.authenticated
+        "\nکد ورود را از داخل شاد دریافت کن."
     )
 
-    await client.run()
+    code = input(
+        "Login code: "
+    ).strip()
+
+    print("\nsignIn:")
+
+    result = await client.sign_in(
+        phone=phone,
+        phone_code=code,
+    )
+
+    print(result)
+
+    if result.get("status") == "OK":
+        print(
+            "\nLogin successful"
+        )
+        print(
+            "Session saved."
+        )
+    else:
+        print(
+            "\nLogin failed"
+        )
 
 
-asyncio.run(main())
+if __name__ == "__main__":
+    asyncio.run(main())
