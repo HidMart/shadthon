@@ -3,39 +3,27 @@ from __future__ import annotations
 import json
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from typing import Any
 
 
 @dataclass
 class Session:
     phone_number: str | None = None
     auth: str | None = None
-    decoded_auth: dict | None = None
-
+    user_guid: str | None = None
+    messenger_host: str | None = None
+    state: str = "new"
+    private_key_pem: str | None = None
     temporary_session: str | None = None
-
     key_hex: str | None = None
     iv_hex: str | None = None
+    decoded_auth: dict[str, Any] | None = None
 
-    messenger_host: str | None = None
+    def save(self, path: str | Path) -> None:
+        target = Path(path)
+        target.parent.mkdir(parents=True, exist_ok=True)
 
-    user_guid: str | None = None
-
-    state: str = "new"
-
-    private_key_pem: str | None = None
-
-    def save(
-        self,
-        path: str | Path,
-    ) -> None:
-        path = Path(path)
-
-        path.parent.mkdir(
-            parents=True,
-            exist_ok=True,
-        )
-
-        path.write_text(
+        target.write_text(
             json.dumps(
                 asdict(self),
                 ensure_ascii=False,
@@ -45,78 +33,56 @@ class Session:
         )
 
     @classmethod
-    def load(
-        cls,
-        path: str | Path,
-    ) -> "Session":
-        path = Path(path)
+    def load(cls, path: str | Path) -> "Session":
+        target = Path(path)
 
-        data = json.loads(
-            path.read_text(
-                encoding="utf-8"
+        if not target.exists():
+            return cls()
+
+        try:
+            data = json.loads(
+                target.read_text(encoding="utf-8")
             )
-        )
+        except Exception:
+            return cls()
 
-        return cls(**data)
+        if not isinstance(data, dict):
+            return cls()
 
+        allowed = {
+            "phone_number",
+            "auth",
+            "user_guid",
+            "messenger_host",
+            "state",
+            "private_key_pem",
+            "temporary_session",
+            "key_hex",
+            "iv_hex",
+            "decoded_auth",
+        }
 
-class SessionStore:
+        clean = {
+            key: value
+            for key, value in data.items()
+            if key in allowed
+        }
 
-    def __init__(
-        self,
-        directory: str = "sessions",
-    ):
-        self.directory = Path(directory)
+        return cls(**clean)
 
-        self.directory.mkdir(
-            parents=True,
-            exist_ok=True,
-        )
+    def clear(self, path: str | Path) -> None:
+        target = Path(path)
 
-    def path_for(
-        self,
-        phone: str,
-    ) -> Path:
-        safe = (
-            phone
-            .replace("+", "")
-            .replace(" ", "")
-            .replace("-", "")
-        )
+        if target.exists():
+            target.unlink()
 
-        return self.directory / f"{safe}.json"
-
-    def save(
-        self,
-        session: Session,
-    ) -> None:
-        if not session.phone_number:
-            raise ValueError(
-                "Session phone number is missing"
-            )
-
-        session.save(
-            self.path_for(
-                session.phone_number
-            )
-        )
-
-    def load(
-        self,
-        phone: str,
-    ) -> Session | None:
-        path = self.path_for(phone)
-
-        if not path.exists():
-            return None
-
-        return Session.load(path)
-
-    def delete(
-        self,
-        phone: str,
-    ) -> None:
-        path = self.path_for(phone)
-
-        if path.exists():
-            path.unlink()
+        self.phone_number = None
+        self.auth = None
+        self.user_guid = None
+        self.messenger_host = None
+        self.state = "new"
+        self.private_key_pem = None
+        self.temporary_session = None
+        self.key_hex = None
+        self.iv_hex = None
+        self.decoded_auth = None
