@@ -1,284 +1,251 @@
+from __future__ import annotations
+
 import json
+from typing import Any
+
 import aiohttp
 
 from .crypto import (
     aes_decrypt,
     aes_encrypt,
-    calculate_signature,
-    probe_decrypt,
     rsa_sign,
-    decode_auth,
 )
+from .exceptions import (
+    NetworkError,
+    ProtocolError,
+)
+from .session import Session
+from .utils import generate_session_id
 
 
-DEFAULT_HOSTS = [
+DEFAULT_HOSTS = (
+    "shadmessenger2.iranlms.ir",
     "shadmessenger60.iranlms.ir",
     "shadmessenger145.iranlms.ir",
     "shadmessenger40.iranlms.ir",
     "shadmessenger57.iranlms.ir",
-    "shadmessenger23.iranlms.ir",
-]
-
-
-CLIENT_INFO = {
-    "app_name": "Main",
-    "app_version": "4.4.26",
-    "platform": "Web",
-    "package": "web.shad.ir",
-    "lang_code": "fa",
-}
+)
 
 
 class Transport:
-    def __init__(self, session):
+
+    def __init__(
+        self,
+        session: Session,
+        timeout: int = 30,
+    ):
         self.session = session
-        self.hosts = list(DEFAULT_HOSTS)
-
-        if session.messenger_host in self.hosts:
-            self.hosts.remove(session.messenger_host)
-
-        self.hosts.insert(
-            0,
-            session.messenger_host
-            or DEFAULT_HOSTS[0],
+        self.timeout = aiohttp.ClientTimeout(
+            total=timeout
         )
 
-    def _inner(self, method, input_data):
-        return json.dumps(
-            {
-                "client": CLIENT_INFO,
-                "method": method,
-                "input": input_data,
-            },
-            ensure_ascii=False,
-            separators=(",", ":"),
+    @property
+    def host(self) -> str:
+        return (
+            self.session.messenger_host
+            or DEFAULT_HOSTS[0]
         )
 
-    def _temporary_envelope(self, encrypted):
+    @property
+    def url(self) -> str:
+        return f"https://{self.host}/"
+
+    @staticmethod
+    def client_info() -> dict[str, Any]:
         return {
+            "app_name": "Main",
+            "app_version": "4.4.26",
+            "platform": "Web",
+            "package": "web.shad.ir",
+            "lang_code": "fa",
+        }
+
+    def build_payload(
+        self,
+        method: str,
+        input_data: dict[str, Any],
+    ) -> dict[str, Any]:
+        return {
+            "method": method,
+            "input": input_data,
+            "client": self.client_info(),
+        }
+
+    async def post(
+        self,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        headers = {
+            "Content-Type":
+                "application/json",
+            "Accept":
+                "application/json, text/plain, */*",
+            "User-Agent":
+                "Mozilla/5.0 Shadthon/0.2",
+        }
+
+        try:
+            async with aiohttp.ClientSession(
+                timeout=self.timeout
+            ) as http:
+
+                async with http.post(
+                    self.url,
+                    json=payload,
+                    headers=headers,
+                ) as response:
+
+                    text = await response.text()
+
+                    if response.status >= 400:
+                        raise NetworkError(
+                            f"HTTP {response.status}: {text[:500]}"
+                        )
+
+                    try:
+                        return json.loads(text)
+                    except json.JSONDecodeError as exc:
+                        raise ProtocolError(
+                            f"Invalid JSON response: {text[:500]}"
+                        ) from exc
+
+        except aiohttp.ClientError as exc:
+            raise NetworkError(
+                str(exc)
+            ) from exc
+
+    async def direct(
+        self,
+        method: str,
+        input_data: dict[str, Any],
+    ) -> dict[str, Any]:
+
+        payload = self.build_payload(
+            method,
+            input_data,
+        )
+
+        return await self.post(payload)
+
+    async def handshake(
+        self,
+        method: str,
+        input_data: dict[str, Any],
+    ) -> dict[str, Any]:
+
+        inner = self.build_payload(
+            method,
+            input_data,
+        )
+
+        encrypted = aes_encrypt(
+            json.dumps(
+                inner,
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ),
+            self._temporary_key(),
+        )
+
+        payload = {
             "api_version": "6",
-            "tmp_session": self.session.temporary_session,
+            "tmp_session": (
+                self.session.temporary_session
+                or generate_session_id()
+            ),
             "data_enc": encrypted,
         }
 
-    def _authenticated_envelope(self, encrypted):
-        auth = (
-            self.session.decoded_auth
-            or decode_auth(self.session.auth)
+        result = await self.post(payload)
+
+        return self._decode_result(
+            result,
+            self._temporary_key(),
         )
+
+    async def authenticated(
+        self,
+        method: str,
+        input_data: dict[str, Any],
+    ) -> dict[str, Any]:
+
+        if not self.session.auth:
+            raise ProtocolError(
+                "No authenticated session"
+            )
+
+        key = self._session_key()
+
+        inner = self.build_payload(
+            method,
+            input_data,
+        )
+
+        encrypted = aes_encrypt(
+            json.dumps(
+                inner,
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ),
+            key,
+        )
+
+        sign = ""
 
         if self.session.private_key_pem:
-            signature = rsa_sign(
+            sign = rsa_sign(
+                encrypted,
                 self.session.private_key_pem,
-                encrypted,
-            )
-        else:
-            signature = calculate_signature(
-                self.session.get_key(),
-                encrypted,
             )
 
-        return {
+        payload = {
             "api_version": "6",
-            "auth": auth,
+            "auth": self.session.auth,
             "data_enc": encrypted,
-            "sign": signature,
+            "sign": sign,
         }
 
-    async def _post(self, payload):
-        last_error = None
+        result = await self.post(payload)
 
-        headers = {
-            "Content-Type": "application/json",
-            "Origin": "https://web.shad.ir",
-            "Referer": "https://web.shad.ir/",
-            "User-Agent": (
-                "Mozilla/5.0 "
-                "(Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 "
-                "(KHTML, like Gecko) "
-                "Chrome/153.0.0.0 Safari/537.36"
-            ),
-        }
-
-        timeout = aiohttp.ClientTimeout(
-            total=30
+        return self._decode_result(
+            result,
+            key,
         )
 
-        async with aiohttp.ClientSession(
-            timeout=timeout,
-            headers=headers,
-        ) as http:
+    def _temporary_key(self) -> bytes:
+        return b"\x00" * 32
 
-            for host in self.hosts:
-                try:
-                    async with http.post(
-                        f"https://{host}/",
-                        json=payload,
-                    ) as response:
-
-                        text = await response.text()
-
-                        if response.status >= 500:
-                            continue
-
-                        if response.status != 200:
-                            last_error = RuntimeError(
-                                f"HTTP {response.status}: {text}"
-                            )
-                            continue
-
-                        self.session.messenger_host = host
-
-                        try:
-                            return json.loads(text)
-                        except json.JSONDecodeError:
-                            return {
-                                "raw": text
-                            }
-
-                except Exception as exc:
-                    last_error = exc
-
-        if last_error:
-            raise last_error
-
-        raise RuntimeError(
-            "No Shad server is available."
-        )
-
-    async def send_handshake(
-        self,
-        method,
-        input_data,
-    ):
-        if not self.session.temporary_session:
-            raise RuntimeError(
-                "Temporary session has not been initialized."
+    def _session_key(self) -> bytes:
+        if not self.session.key_hex:
+            raise ProtocolError(
+                "Session encryption key is missing"
             )
 
-        inner = self._inner(
-            method,
-            input_data,
-        )
+        try:
+            return bytes.fromhex(
+                self.session.key_hex
+            )
+        except ValueError as exc:
+            raise ProtocolError(
+                "Invalid session key"
+            ) from exc
 
-        encrypted = aes_encrypt(
-            inner,
-            self.session.get_key(),
-            self.session.get_iv(),
-        )
+    @staticmethod
+    def _decode_result(
+        result: dict[str, Any],
+        key: bytes,
+    ) -> dict[str, Any]:
 
-        payload = self._temporary_envelope(
-            encrypted
-        )
+        if "data_enc" not in result:
+            return result
 
-        response = await self._post(payload)
+        try:
+            decoded = aes_decrypt(
+                result["data_enc"],
+                key,
+            )
 
-        return self._decrypt_response(
-            response,
-            temporary=True,
-        )
+            return json.loads(decoded)
 
-    async def send_authenticated(
-        self,
-        method,
-        input_data,
-    ):
-        inner = self._inner(
-            method,
-            input_data,
-        )
-
-        encrypted = aes_encrypt(
-            inner,
-            self.session.get_key(),
-            self.session.get_iv(),
-        )
-
-        payload = self._authenticated_envelope(
-            encrypted
-        )
-
-        response = await self._post(payload)
-
-        return self._decrypt_response(
-            response,
-            temporary=False,
-        )
-
-    async def send_direct(
-        self,
-        method,
-        input_data,
-    ):
-        outer = json.dumps(
-            {
-                "client": CLIENT_INFO,
-                "auth": self.session.decoded_auth,
-                "method": method,
-                "input": input_data,
-            },
-            ensure_ascii=False,
-            separators=(",", ":"),
-        )
-
-        encrypted = aes_encrypt(
-            outer,
-            self.session.get_key(),
-            self.session.get_iv(),
-        )
-
-        response = await self._post(
-            {
-                "data_enc": encrypted
-            }
-        )
-
-        return self._decrypt_response(
-            response,
-            temporary=False,
-        )
-
-    def _decrypt_response(
-        self,
-        response,
-        temporary=False,
-    ):
-        if not isinstance(response, dict):
-            return response
-
-        encrypted = response.get(
-            "data_enc"
-        )
-
-        if not encrypted:
-            return response
-
-        if temporary:
-            try:
-                decrypted = aes_decrypt(
-                    encrypted,
-                    self.session.get_key(),
-                    self.session.get_iv(),
-                )
-
-                return json.loads(decrypted)
-
-            except Exception:
-                decrypted, key, iv = probe_decrypt(
-                    encrypted,
-                    self.session.temporary_session,
-                )
-
-                self.session.set_key(key)
-                self.session.set_iv(iv)
-
-                return json.loads(decrypted)
-
-        decrypted = aes_decrypt(
-            encrypted,
-            self.session.get_key(),
-            self.session.get_iv(),
-        )
-
-        return json.loads(decrypted)
+        except Exception:
+            return result
