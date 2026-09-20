@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import random
 import re
 import secrets
@@ -19,14 +20,17 @@ def random_id() -> str:
 
 
 def normalize_phone(
-    phone: str,
+    phone: str | None,
 ) -> str:
-    phone = phone.strip()
+    if not phone:
+        raise ValueError(
+            "Phone number is required."
+        )
 
     phone = re.sub(
         r"[^\d+]",
         "",
-        phone,
+        phone.strip(),
     )
 
     if phone.startswith("+"):
@@ -47,8 +51,6 @@ def normalize_phone(
 def json_text(
     value: object,
 ) -> str:
-    import json
-
     return json.dumps(
         value,
         ensure_ascii=False,
