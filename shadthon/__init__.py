@@ -1,21 +1,42 @@
 from .client import Client
-from .session import Session
 from .exceptions import (
-    ShadthonError,
     AuthenticationError,
+    CryptoError,
+    DownloadError,
+    InvalidAuthError,
     NetworkError,
     ProtocolError,
-    InvalidAuthError,
+    SessionError,
+    ShadthonError,
+    UploadError,
 )
+from .models import (
+    FileInfo,
+    LoginResult,
+    Message,
+    Poll,
+    User,
+)
+from .session import Session
 
-__version__ = "0.1.0"
+
+__version__ = "0.2.0"
 
 __all__ = [
     "Client",
     "Session",
+    "User",
+    "Message",
+    "Poll",
+    "FileInfo",
+    "LoginResult",
     "ShadthonError",
     "AuthenticationError",
+    "InvalidAuthError",
     "NetworkError",
     "ProtocolError",
-    "InvalidAuthError",
+    "CryptoError",
+    "SessionError",
+    "UploadError",
+    "DownloadError",
 ]
