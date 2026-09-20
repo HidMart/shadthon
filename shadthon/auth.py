@@ -2,9 +2,11 @@ from .crypto import (
     generate_tmp_session,
     generate_rsa_keys,
     decrypt_rsa_oaep,
-    auth_set,
 )
 from .transport import Transport
+
+
+DEFAULT_BASE_URL = "https://shadmessenger36.iranlms.ir/"
 
 
 class AuthManager:
@@ -15,11 +17,14 @@ class AuthManager:
     ):
         self.session = session
 
+        self.base_url = (
+            base_url
+            or DEFAULT_BASE_URL
+        )
+
         self.transport = Transport(
             tmp_session=session.tmp_session,
-            base_url=base_url
-                if base_url
-                else Transport.__init__.__defaults__[0]
+            base_url=self.base_url
         )
 
     async def start(self):
@@ -42,9 +47,9 @@ class AuthManager:
 
     async def send_code(
         self,
-        phone_number: str,
-        send_type: str = "SMS",
-        pass_key: str | None = None
+        phone_number,
+        send_type="SMS",
+        pass_key=None
     ):
         if not self.session.tmp_session:
             await self.start()
@@ -55,7 +60,7 @@ class AuthManager:
 
         data = {
             "phone_number": phone_number,
-            "send_type": send_type
+            "send_type": send_type,
         }
 
         if pass_key:
@@ -75,10 +80,7 @@ class AuthManager:
 
         return result
 
-    async def sign_in(
-        self,
-        phone_code: str
-    ):
+    async def sign_in(self, phone_code):
         if not self.session.phone_code_hash:
             raise RuntimeError(
                 "phone_code_hash is missing"
@@ -99,11 +101,12 @@ class AuthManager:
             authenticated=False
         )
 
-        data = result.get("data", result)
-
-        encrypted_auth = data.get(
-            "auth"
+        data = result.get(
+            "data",
+            result
         )
+
+        encrypted_auth = data.get("auth")
 
         if not encrypted_auth:
             return result
