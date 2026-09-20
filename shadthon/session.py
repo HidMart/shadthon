@@ -1,77 +1,43 @@
 from __future__ import annotations
 
 import json
-from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
 
-@dataclass
 class Session:
-    phone_number: str | None = None
-    auth: str | None = None
-    user_guid: str | None = None
-    messenger_host: str | None = None
-    state: str = "new"
+    def __init__(
+        self,
+        phone_number: str | None = None,
+        auth: str | None = None,
+        user_guid: str | None = None,
+        messenger_host: str | None = None,
+        api_hosts: list[str] | None = None,
+        websocket_hosts: list[str] | None = None,
+        state: str = "unauthenticated",
+    ):
+        self.phone_number = phone_number
+        self.auth = auth
+        self.user_guid = user_guid
+        self.messenger_host = messenger_host
 
-    private_key_pem: str | None = None
-    public_key_pem: str | None = None
+        self.api_hosts = api_hosts or []
+        self.websocket_hosts = websocket_hosts or []
 
-    temporary_session: str | None = None
-    phone_code_hash: str | None = None
-
-    key_hex: str | None = None
-    iv_hex: str | None = None
-
-    decoded_auth: dict[str, Any] | None = None
-
-    def set_key(self, key: bytes) -> None:
-        self.key_hex = key.hex()
-
-    def set_iv(self, iv: bytes) -> None:
-        self.iv_hex = iv.hex()
-
-    def get_key(self) -> bytes | None:
-        if not self.key_hex:
-            return None
-
-        try:
-            return bytes.fromhex(self.key_hex)
-        except ValueError:
-            return None
-
-    def get_iv(self) -> bytes:
-        if not self.iv_hex:
-            return b"\x00" * 16
-
-        try:
-            return bytes.fromhex(self.iv_hex)
-        except ValueError:
-            return b"\x00" * 16
-
-    def save(self, path: str | Path) -> None:
-        target = Path(path)
-        target.parent.mkdir(parents=True, exist_ok=True)
-
-        target.write_text(
-            json.dumps(
-                asdict(self),
-                ensure_ascii=False,
-                indent=2,
-            ),
-            encoding="utf-8",
-        )
+        self.state = state
 
     @classmethod
-    def load(cls, path: str | Path) -> "Session":
-        target = Path(path)
+    def load(
+        cls,
+        path: Path,
+    ) -> "Session":
 
-        if not target.exists():
+        if not path.exists():
             return cls()
 
         try:
             data = json.loads(
-                target.read_text(
+                path.read_text(
                     encoding="utf-8"
                 )
             )
@@ -81,47 +47,109 @@ class Session:
         if not isinstance(data, dict):
             return cls()
 
-        allowed = {
-            "phone_number",
-            "auth",
-            "user_guid",
-            "messenger_host",
-            "state",
-            "private_key_pem",
-            "public_key_pem",
-            "temporary_session",
-            "phone_code_hash",
-            "key_hex",
-            "iv_hex",
-            "decoded_auth",
+        return cls(
+            phone_number=data.get(
+                "phone_number"
+            ),
+            auth=data.get(
+                "auth"
+            ),
+            user_guid=data.get(
+                "user_guid"
+            ),
+            messenger_host=data.get(
+                "messenger_host"
+            ),
+            api_hosts=data.get(
+                "api_hosts",
+                [],
+            ),
+            websocket_hosts=data.get(
+                "websocket_hosts",
+                [],
+            ),
+            state=data.get(
+                "state",
+                "unauthenticated",
+            ),
+        )
+
+    def save(
+        self,
+        path: Path,
+    ) -> None:
+
+        path.parent.mkdir(
+            parents=True,
+            exist_ok=True,
+        )
+
+        data = {
+            "phone_number":
+                self.phone_number,
+            "auth":
+                self.auth,
+            "user_guid":
+                self.user_guid,
+            "messenger_host":
+                self.messenger_host,
+            "api_hosts":
+                self.api_hosts,
+            "websocket_hosts":
+                self.websocket_hosts,
+            "state":
+                self.state,
         }
 
-        clean = {
-            key: value
-            for key, value in data.items()
-            if key in allowed
-        }
+        path.write_text(
+            json.dumps(
+                data,
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
 
-        return cls(**clean)
-
-    def clear(self, path: str | Path) -> None:
-        target = Path(path)
-
-        if target.exists():
-            target.unlink()
+    def clear(
+        self,
+        path: Path,
+    ) -> None:
 
         self.phone_number = None
         self.auth = None
         self.user_guid = None
         self.messenger_host = None
-        self.state = "new"
+        self.api_hosts = []
+        self.websocket_hosts = []
+        self.state = "unauthenticated"
 
-        self.private_key_pem = None
-        self.public_key_pem = None
+        if path.exists():
+            path.unlink()
 
-        self.temporary_session = None
-        self.phone_code_hash = None
+    def get_key(self) -> bytes | None:
+        if not self.auth:
+            return None
 
-        self.key_hex = None
-        self.iv_hex = None
-        self.decoded_auth = None
+        from .crypto import Crypto
+
+        return Crypto(
+            self.auth
+        ).key
+
+    def get_iv(self) -> bytes | None:
+        if not self.auth:
+            return None
+
+        from .crypto import Crypto
+
+        return Crypto(
+            self.auth
+        ).iv
+
+    def set_auth(
+        self,
+        auth: str,
+    ) -> None:
+
+        self.auth = auth
+        self.state = "authenticated"
