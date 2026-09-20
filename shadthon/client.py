@@ -1,18 +1,19 @@
 from __future__ import annotations
 
+import random
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 from .auth import AuthManager
 from .exceptions import AuthenticationError
 from .models import (
+    LoginResult,
     Message,
     Poll,
-    LoginResult,
 )
 from .session import Session
 from .transport import Transport
-from .utils import normalize_phone
+from .websocket import ShadWebSocket
 
 
 MessageHandler = Callable[
@@ -25,12 +26,13 @@ class Client:
 
     def __init__(
         self,
+        auth: str | None = None,
         phone_number: str | None = None,
         session_dir: str = "sessions",
         session_name: str = "default",
-        messenger_host: str | None = None,
         timeout: int = 30,
     ):
+
         self.session_dir = Path(
             session_dir
         )
@@ -51,12 +53,7 @@ class Client:
 
         if phone_number:
             self.session.phone_number = (
-                normalize_phone(phone_number)
-            )
-
-        if messenger_host:
-            self.session.messenger_host = (
-                messenger_host
+                phone_number
             )
 
         self.transport = Transport(
@@ -68,40 +65,67 @@ class Client:
             self
         )
 
+        self.websocket = ShadWebSocket(
+            self.session,
+            self.transport,
+        )
+
         self._message_handlers: list[
             MessageHandler
         ] = []
 
+        if auth:
+            self.session.set_auth(
+                auth.strip()
+            )
+
         self.save_session()
 
     @property
-    def phone_number(self) -> str | None:
-        return self.session.phone_number
-
-    @phone_number.setter
     def phone_number(
         self,
-        value: str | None,
-    ) -> None:
-        self.session.phone_number = (
-            normalize_phone(value)
-            if value
-            else None
-        )
+    ) -> str | None:
 
-    def save_session(self) -> None:
+        return self.session.phone_number
+
+    @property
+    def auth_token(
+        self,
+    ) -> str | None:
+
+        return self.session.auth
+
+    def save_session(
+        self,
+    ) -> None:
+
         self.session.save(
             self.session_path
         )
 
-    def is_authenticated(self) -> bool:
+    def is_authenticated(
+        self,
+    ) -> bool:
+
         return bool(
             self.session.auth
             and self.session.state
             == "authenticated"
         )
 
-    def logout(self) -> None:
+    def set_auth(
+        self,
+        auth: str,
+    ) -> LoginResult:
+
+        return self.auth.set_auth(
+            auth
+        )
+
+    def logout(
+        self,
+    ) -> None:
+
         self.session.clear(
             self.session_path
         )
@@ -125,20 +149,84 @@ class Client:
         for handler in list(
             self._message_handlers
         ):
-            await handler(message)
+            try:
+                result = handler(
+                    message
+                )
 
-    async def send_code(self) -> dict:
-        return await self.auth.request_code()
+                if result is not None:
+                    await result
 
-    async def login(
+            except Exception as exc:
+                print(
+                    "Shadthon handler error:",
+                    exc,
+                )
+
+    def _message_from_update(
         self,
-        otp: str,
-        phone_code_hash: str | None = None,
-    ) -> LoginResult:
+        update: dict[str, Any],
+    ) -> Message:
 
-        return await self.auth.login(
-            otp,
-            phone_code_hash,
+        message = update
+
+        if isinstance(
+            update.get("message"),
+            dict,
+        ):
+            message = update["message"]
+
+        text = message.get(
+            "text"
+        )
+
+        if text is None:
+
+            nested = message.get(
+                "message"
+            )
+
+            if isinstance(
+                nested,
+                dict,
+            ):
+                text = nested.get(
+                    "text"
+                )
+
+        message_id = (
+            message.get(
+                "message_id"
+            )
+            or message.get(
+                "id"
+            )
+        )
+
+        object_guid = (
+            message.get(
+                "object_guid"
+            )
+            or message.get(
+                "chat_id"
+            )
+        )
+
+        sender_guid = (
+            message.get(
+                "sender_guid"
+            )
+            or message.get(
+                "author_object_guid"
+            )
+        )
+
+        return Message(
+            message_id=message_id,
+            object_guid=object_guid,
+            text=text,
+            sender_guid=sender_guid,
+            raw=update,
         )
 
     async def call(
@@ -149,7 +237,8 @@ class Client:
 
         if not self.is_authenticated():
             raise AuthenticationError(
-                "Client is not authenticated."
+                "Client is not authenticated. "
+                "Set a valid Shad auth token first."
             )
 
         return await self.transport.authenticated(
@@ -166,14 +255,15 @@ class Client:
     ) -> dict[str, Any]:
 
         data: dict[str, Any] = {
-            "object_guid": chat_guid,
-            "rnd": __import__(
-                "random"
-            ).randint(
-                100000000,
-                999999999,
-            ),
-            "text": text,
+            "object_guid":
+                chat_guid,
+            "rnd":
+                random.randint(
+                    100000000,
+                    999999999,
+                ),
+            "text":
+                text,
         }
 
         if reply_to_message_id is not None:
@@ -193,8 +283,9 @@ class Client:
             int | str | None = None,
     ) -> list[Message]:
 
-        data: dict[str, Any] = {
-            "object_guid": chat_guid,
+        data = {
+            "object_guid":
+                chat_guid,
         }
 
         if middle_message_id is not None:
@@ -207,7 +298,7 @@ class Client:
             data,
         )
 
-        raw_messages = result.get(
+        raw = result.get(
             "messages",
             result.get(
                 "data",
@@ -216,28 +307,16 @@ class Client:
         )
 
         if not isinstance(
-            raw_messages,
+            raw,
             list,
         ):
             return []
 
         return [
-            Message(
-                message_id=item.get(
-                    "message_id"
-                ),
-                object_guid=item.get(
-                    "object_guid"
-                ),
-                text=item.get(
-                    "text"
-                ),
-                sender_guid=item.get(
-                    "sender_guid"
-                ),
-                raw=item,
+            self._message_from_update(
+                item
             )
-            for item in raw_messages
+            for item in raw
             if isinstance(
                 item,
                 dict,
@@ -253,7 +332,8 @@ class Client:
         result = await self.call(
             "getMessagesByID",
             {
-                "object_guid": chat_guid,
+                "object_guid":
+                    chat_guid,
                 "message_ids": [
                     message_id
                 ],
@@ -272,6 +352,7 @@ class Client:
             messages,
             list,
         ) or not messages:
+
             return None
 
         item = messages[0]
@@ -282,20 +363,8 @@ class Client:
         ):
             return None
 
-        return Message(
-            message_id=item.get(
-                "message_id"
-            ),
-            object_guid=item.get(
-                "object_guid"
-            ),
-            text=item.get(
-                "text"
-            ),
-            sender_guid=item.get(
-                "sender_guid"
-            ),
-            raw=item,
+        return self._message_from_update(
+            item
         )
 
     async def get_poll(
@@ -306,7 +375,8 @@ class Client:
         result = await self.call(
             "getPollStatus",
             {
-                "poll_id": poll_id,
+                "poll_id":
+                    poll_id,
             },
         )
 
@@ -326,7 +396,9 @@ class Client:
 
         return Poll(
             poll_id=(
-                data.get("poll_id")
+                data.get(
+                    "poll_id"
+                )
                 or poll_id
             ),
             question=data.get(
@@ -348,17 +420,40 @@ class Client:
         return await self.call(
             "votePoll",
             {
-                "poll_id": poll_id,
+                "poll_id":
+                    poll_id,
                 "selection_index":
                     selection_index,
             },
         )
 
-    async def start(self) -> None:
+    async def run(
+        self,
+    ) -> None:
+
         if not self.is_authenticated():
             raise AuthenticationError(
-                "Client is not authenticated."
+                "Set a valid Shad auth token first."
             )
 
-    async def run(self) -> None:
-        await self.start()
+        async for update in (
+            self.websocket.updates(
+                message_updates=True
+            )
+        ):
+
+            message = (
+                self._message_from_update(
+                    update
+                )
+            )
+
+            await self.dispatch_message(
+                message
+            )
+
+    async def start(
+        self,
+    ) -> None:
+
+        await self.run()
