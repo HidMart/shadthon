@@ -1,37 +1,56 @@
+from __future__ import annotations
+
 import random
-import string
+import re
+import secrets
 
 
-def generate_session_id(length: int = 32) -> str:
-    alphabet = string.ascii_lowercase
-    return "".join(random.choice(alphabet) for _ in range(length))
+def generate_session_id() -> str:
+    return secrets.token_hex(16)
 
 
-def normalize_phone(phone: str) -> str:
-    value = str(phone).strip().replace(" ", "").replace("-", "")
-
-    if value.startswith("+"):
-        value = value[1:]
-
-    if value.startswith("00"):
-        value = value[2:]
-
-    if value.startswith("98") and len(value) >= 12:
-        return value
-
-    if value.startswith("0") and len(value) == 11:
-        return "98" + value[1:]
-
-    if len(value) == 10 and value.startswith("9"):
-        return "98" + value
-
-    return value
+def random_id() -> str:
+    return str(
+        random.randint(
+            100000,
+            999999999,
+        )
+    )
 
 
-def split_phone(phone: str):
-    full = normalize_phone(phone)
+def normalize_phone(
+    phone: str,
+) -> str:
+    phone = phone.strip()
 
-    if full.startswith("98"):
-        return full[2:], "98"
+    phone = re.sub(
+        r"[^\d+]",
+        "",
+        phone,
+    )
 
-    return full, "98"
+    if phone.startswith("+"):
+        phone = phone[1:]
+
+    if phone.startswith("0098"):
+        phone = phone[2:]
+
+    if phone.startswith("98"):
+        return phone
+
+    if phone.startswith("0"):
+        return "98" + phone[1:]
+
+    return phone
+
+
+def json_text(
+    value: object,
+) -> str:
+    import json
+
+    return json.dumps(
+        value,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
