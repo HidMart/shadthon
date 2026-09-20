@@ -1,105 +1,102 @@
 import json
-from pathlib import Path
+import os
 
 
 class Session:
-    def __init__(
-        self,
-        name: str = "shadthon"
-    ):
+    def __init__(self, name="default"):
         self.name = name
 
-        self.path = (
-            Path.home()
-            / ".shadthon"
-            / f"{name}.json"
+        base = os.path.expanduser(
+            "~/.shadthon"
         )
 
-        self.tmp_session = None
-        self.auth = None
-        self.public_key = None
-        self.private_key = None
-        self.phone_number = None
-        self.phone_code_hash = None
-        self.user_guid = None
+        os.makedirs(
+            base,
+            exist_ok=True,
+        )
+
+        self.path = os.path.join(
+            base,
+            f"{name}.json",
+        )
+
+        self.data = {}
+
+        self.load()
 
     @property
     def authenticated(self):
-        return bool(self.auth)
-
-    def save(self):
-        self.path.parent.mkdir(
-            parents=True,
-            exist_ok=True
+        return bool(
+            self.data.get("auth")
         )
 
-        data = {
-            "tmp_session": self.tmp_session,
-            "auth": self.auth,
-            "public_key": self.public_key,
-            "private_key": self.private_key,
-            "phone_number": self.phone_number,
-            "phone_code_hash": self.phone_code_hash,
-            "user_guid": self.user_guid,
-        }
+    @property
+    def auth(self):
+        return self.data.get("auth")
 
-        self.path.write_text(
-            json.dumps(
-                data,
-                ensure_ascii=False,
-                indent=2
-            ),
-            encoding="utf-8"
-        )
-
-    def load(self):
-        if not self.path.exists():
-            return False
-
-        data = json.loads(
-            self.path.read_text(
-                encoding="utf-8"
-            )
-        )
-
-        self.tmp_session = data.get(
-            "tmp_session"
-        )
-
-        self.auth = data.get(
-            "auth"
-        )
-
-        self.public_key = data.get(
-            "public_key"
-        )
-
-        self.private_key = data.get(
+    @property
+    def private_key(self):
+        return self.data.get(
             "private_key"
         )
 
-        self.phone_number = data.get(
-            "phone_number"
+    @property
+    def phone(self):
+        return self.data.get(
+            "phone"
         )
 
-        self.phone_code_hash = data.get(
-            "phone_code_hash"
+    def load(self):
+        if not os.path.exists(self.path):
+            return
+
+        try:
+            with open(
+                self.path,
+                "r",
+                encoding="utf-8",
+            ) as file:
+                self.data = json.load(file)
+
+        except Exception:
+            self.data = {}
+
+    def save(self):
+        temporary = self.path + ".tmp"
+
+        with open(
+            temporary,
+            "w",
+            encoding="utf-8",
+        ) as file:
+            json.dump(
+                self.data,
+                file,
+                ensure_ascii=False,
+                indent=2,
+            )
+
+        os.replace(
+            temporary,
+            self.path,
         )
 
-        self.user_guid = data.get(
-            "user_guid"
-        )
+    def set_auth(
+        self,
+        auth,
+        private_key,
+        phone=None,
+    ):
+        self.data["auth"] = auth
+        self.data["private_key"] = private_key
 
-        return True
+        if phone:
+            self.data["phone"] = phone
+
+        self.save()
 
     def clear(self):
-        if self.path.exists():
-            self.path.unlink()
+        self.data = {}
 
-        self.tmp_session = None
-        self.auth = None
-        self.public_key = None
-        self.private_key = None
-        self.phone_number = None
-        self.phone_code_hash = None
-        self.user_guid = None
+        if os.path.exists(self.path):
+            os.remove(self.path)
