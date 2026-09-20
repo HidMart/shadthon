@@ -24,3 +24,11 @@ class CryptoError(ShadthonError):
 
 class SessionError(ShadthonError):
     pass
+
+
+class UploadError(ShadthonError):
+    pass
+
+
+class DownloadError(ShadthonError):
+    pass
