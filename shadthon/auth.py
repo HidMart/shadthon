@@ -1,114 +1,105 @@
-from .crypto import (
-    generate_tmp_session,
-    generate_rsa_keys,
-    decrypt_rsa_oaep,
-)
-from .transport import Transport
-
-
-DEFAULT_BASE_URL = (
-    "https://shadmessenger36.iranlms.ir/"
-)
+from .crypto import Crypto
+from .exceptions import AuthenticationError
 
 
 class AuthManager:
     def __init__(
         self,
+        transport,
         session,
-        base_url=None
     ):
+        self.transport = transport
         self.session = session
-
-        self.base_url = (
-            base_url
-            or DEFAULT_BASE_URL
-        )
-
-        self.transport = Transport(
-            tmp_session=session.tmp_session,
-            base_url=self.base_url
-        )
-
-    async def start(self):
-        self.session.tmp_session = (
-            generate_tmp_session()
-        )
-
-        public_key, private_key = (
-            generate_rsa_keys()
-        )
-
-        self.session.public_key = public_key
-        self.session.private_key = private_key
-
-        self.transport.tmp_session = (
-            self.session.tmp_session
-        )
-
-        self.session.save()
 
     async def send_code(
         self,
-        phone_number,
-        send_type="SMS",
-        pass_key=None
+        phone,
     ):
-        if not self.session.tmp_session:
-            await self.start()
-
-        self.session.phone_number = (
-            phone_number
-        )
-
-        data = {
-            "phone_number": phone_number,
-            "send_type": send_type
-        }
-
-        if pass_key:
-            data["pass_key"] = pass_key
+        tmp_session = Crypto.random_tmp_session()
 
         result = await self.transport.request(
             "sendCode",
-            data,
-            authenticated=False
+            {
+                "phone_number": phone,
+                "send_type": "SMS",
+            },
+            tmp_session=tmp_session,
+            authenticated=False,
         )
 
-        if result.get("phone_code_hash"):
-            self.session.phone_code_hash = (
-                result["phone_code_hash"]
-            )
-            self.session.save()
+        if result.get("status") != "OK":
+            return result
+
+        data = result.get(
+            "data",
+            {},
+        )
+
+        self.session.data[
+            "tmp_session"
+        ] = tmp_session
+
+        self.session.data[
+            "phone"
+        ] = phone
+
+        self.session.data[
+            "phone_code_hash"
+        ] = data.get(
+            "phone_code_hash"
+        )
+
+        self.session.save()
 
         return result
 
     async def sign_in(
         self,
-        phone_code
+        phone,
+        phone_code,
+        phone_code_hash=None,
     ):
-        if not self.session.phone_code_hash:
-            raise RuntimeError(
-                "phone_code_hash is missing"
+        tmp_session = self.session.data.get(
+            "tmp_session"
+        )
+
+        if not tmp_session:
+            raise AuthenticationError(
+                "Temporary session not found"
             )
+
+        if not phone_code_hash:
+            phone_code_hash = self.session.data.get(
+                "phone_code_hash"
+            )
+
+        if not phone_code_hash:
+            raise AuthenticationError(
+                "phone_code_hash not found"
+            )
+
+        public_key, private_key = (
+            Crypto.generate_rsa_keypair()
+        )
 
         result = await self.transport.request(
             "signIn",
             {
-                "phone_number":
-                    self.session.phone_number,
-                "phone_code_hash":
-                    self.session.phone_code_hash,
-                "phone_code":
-                    phone_code,
-                "public_key":
-                    self.session.public_key
+                "phone_number": phone,
+                "phone_code_hash": phone_code_hash,
+                "phone_code": phone_code,
+                "public_key": public_key,
             },
-            authenticated=False
+            tmp_session=tmp_session,
+            authenticated=False,
         )
+
+        if result.get("status") != "OK":
+            return result
 
         data = result.get(
             "data",
-            result
+            {},
         )
 
         encrypted_auth = data.get(
@@ -116,51 +107,34 @@ class AuthManager:
         )
 
         if not encrypted_auth:
-            return result
-
-        auth = decrypt_rsa_oaep(
-            self.session.private_key,
-            encrypted_auth
-        )
-
-        self.session.auth = auth
-        self.session.save()
-
-        return result
-
-    async def register_device(
-        self,
-        device_hash="",
-        device_model="Shadthon",
-        system_version="Python",
-        token=""
-    ):
-        if not self.session.auth:
-            raise RuntimeError(
-                "Authentication required"
+            raise AuthenticationError(
+                "Authentication token not found"
             )
 
-        self.transport.auth = (
-            self.session.auth
+        try:
+            auth = Crypto.decrypt_rsa_oaep(
+                private_key,
+                encrypted_auth,
+            )
+        except Exception as exc:
+            raise AuthenticationError(
+                "Could not decrypt authentication token"
+            ) from exc
+
+        self.session.set_auth(
+            auth=auth,
+            private_key=private_key,
+            phone=phone,
         )
 
-        self.transport.private_key = (
-            self.session.private_key
+        self.session.data.pop(
+            "tmp_session",
+            None,
         )
 
-        result = await self.transport.request(
-            "registerDevice",
-            {
-                "app_version": "4.4.26",
-                "device_hash": device_hash,
-                "device_model": device_model,
-                "is_multi_account": False,
-                "lang_code": "fa",
-                "system_version": system_version,
-                "token": token,
-                "token_type": "Firebase"
-            },
-            authenticated=True
+        self.session.data.pop(
+            "phone_code_hash",
+            None,
         )
 
         self.session.save()
