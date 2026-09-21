@@ -7,11 +7,33 @@ class AuthManager:
         self.transport = transport
         self.session = session
 
+    @staticmethod
+    def _find_value(data, key):
+        if not isinstance(data, dict):
+            return None
+
+        if key in data:
+            return data[key]
+
+        nested = data.get("data")
+
+        if isinstance(nested, dict):
+            value = AuthManager._find_value(
+                nested,
+                key,
+            )
+
+            if value is not None:
+                return value
+
+        return None
+
     async def send_code(self, phone):
         tmp_session = Crypto.random_tmp_session()
 
-        self.session.data["tmp_session"] = tmp_session
+        self.session.tmp_session = tmp_session
         self.session.data["phone_number"] = phone
+
         self.session.save()
 
         result = await self.transport.send_handshake(
@@ -22,29 +44,27 @@ class AuthManager:
             },
         )
 
-        response = result.get(
-            "data",
-            {},
+        phone_code_hash = self._find_value(
+            result,
+            "phone_code_hash",
         )
 
-        if not isinstance(response, dict):
-            return result
-
-        data = response.get(
-            "data",
-            {},
-        )
-
-        if isinstance(data, dict):
-            phone_code_hash = data.get(
+        if phone_code_hash:
+            self.session.data[
                 "phone_code_hash"
-            )
+            ] = phone_code_hash
 
-            if phone_code_hash:
-                self.session.data[
-                    "phone_code_hash"
-                ] = phone_code_hash
-                self.session.save()
+            self.session.save()
+
+        status = self._find_value(
+            result,
+            "status",
+        )
+
+        if status not in (None, "OK"):
+            raise AuthenticationError(
+                f"sendCode failed: {result}"
+            )
 
         return result
 
@@ -54,9 +74,7 @@ class AuthManager:
         phone_code,
         phone_code_hash=None,
     ):
-        tmp_session = (
-            self.session.tmp_session
-        )
+        tmp_session = self.session.tmp_session
 
         if not tmp_session:
             raise AuthenticationError(
@@ -79,41 +97,25 @@ class AuthManager:
             Crypto.generate_rsa_keypair()
         )
 
+        self.session.data[
+            "public_key"
+        ] = public_key
+
+        self.session.save()
+
         result = await self.transport.send_handshake(
             "signIn",
             {
                 "phone_number": phone,
-                "phone_code_hash":
-                    phone_code_hash,
+                "phone_code_hash": phone_code_hash,
                 "phone_code": phone_code,
                 "public_key": public_key,
             },
         )
 
-        response = result.get(
-            "data",
-            {},
-        )
-
-        if not isinstance(response, dict):
-            return result
-
-        data = response.get(
-            "data",
-            {},
-        )
-
-        if not isinstance(data, dict):
-            return result
-
-        if data.get("status") not in (
-            None,
-            "OK",
-        ):
-            return result
-
-        encrypted_auth = data.get(
-            "auth"
+        encrypted_auth = self._find_value(
+            result,
+            "auth",
         )
 
         if not encrypted_auth:
@@ -131,9 +133,9 @@ class AuthManager:
                 "Could not decrypt authentication token."
             ) from exc
 
-        user = data.get(
+        user = self._find_value(
+            result,
             "user",
-            {},
         )
 
         user_guid = ""
@@ -141,6 +143,7 @@ class AuthManager:
         if isinstance(user, dict):
             user_guid = (
                 user.get("user_guid")
+                or user.get("guid")
                 or ""
             )
 
@@ -162,6 +165,11 @@ class AuthManager:
 
         self.session.set_iv(
             b"\x00" * 16
+        )
+
+        self.session.data.pop(
+            "tmp_session",
+            None,
         )
 
         self.session.data.pop(
