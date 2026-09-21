@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import asyncio
 import os
 import random
@@ -55,6 +57,15 @@ class Client:
     def authenticated(self):
         return bool(self.session.auth)
 
+    def _client_info(self):
+        return {
+            "app_name": "Main",
+            "app_version": "4.4.26",
+            "platform": "Web",
+            "package": "web.shad.ir",
+            "lang_code": "fa",
+        }
+
     async def send_code(self, phone=None):
         phone = phone or self.session.phone
 
@@ -95,9 +106,7 @@ class Client:
         self.private_key = self.session.private_key
 
         self.transport.auth = self.auth
-        self.transport.private_key = (
-            self.private_key
-        )
+        self.transport.private_key = self.private_key
 
         return result
 
@@ -125,10 +134,9 @@ class Client:
             "token_type": "Web",
         }
 
-        return await self.transport.request(
+        return await self.transport.send_authenticated(
             "registerDevice",
             data,
-            authenticated=True,
             client_info=self._client_info(),
         )
 
@@ -143,26 +151,35 @@ class Client:
                 "Client is not authenticated"
             )
 
+        if not object_guid:
+            raise ValueError(
+                "object_guid is required"
+            )
+
+        if not text:
+            raise ValueError(
+                "text is required"
+            )
+
         data = {
-            "object_guid": object_guid,
+            "object_guid": str(object_guid),
             "rnd": str(
                 int.from_bytes(
-                    os.urandom(4),
+                    os.urandom(8),
                     "big",
                 )
             ),
-            "text": text,
+            "text": str(text),
         }
 
         if reply_to_message_id is not None:
-            data["reply_to_message_id"] = (
+            data["reply_to_message_id"] = str(
                 reply_to_message_id
             )
 
-        return await self.transport.request(
+        return await self.transport.send_authenticated(
             "sendMessage",
             data,
-            authenticated=True,
             client_info=self._client_info(),
         )
 
@@ -178,22 +195,26 @@ class Client:
                 "Client is not authenticated"
             )
 
+        if not object_guid:
+            raise ValueError(
+                "object_guid is required"
+            )
+
         data = {
-            "object_guid": object_guid,
-            "limit": limit,
+            "object_guid": str(object_guid),
+            "limit": int(limit),
             "sort": "FromMax",
         }
 
         if max_id is not None:
-            data["max_id"] = max_id
+            data["max_id"] = str(max_id)
 
         if min_id is not None:
-            data["min_id"] = min_id
+            data["min_id"] = str(min_id)
 
-        return await self.transport.request(
+        return await self.transport.send_authenticated(
             "getMessages",
             data,
-            authenticated=True,
             client_info=self._client_info(),
         )
 
@@ -209,12 +230,11 @@ class Client:
         data = {}
 
         if start_id is not None:
-            data["start_id"] = start_id
+            data["start_id"] = str(start_id)
 
-        return await self.transport.request(
+        return await self.transport.send_authenticated(
             "getChats",
             data,
-            authenticated=True,
             client_info=self._client_info(),
         )
 
@@ -227,12 +247,13 @@ class Client:
                 "Client is not authenticated"
             )
 
-        return await self.transport.request(
+        data = {
+            "state": str(state),
+        }
+
+        return await self.transport.send_authenticated(
             "getChatsUpdates",
-            {
-                "state": str(state),
-            },
-            authenticated=True,
+            data,
             client_info=self._client_info(),
         )
 
@@ -246,22 +267,24 @@ class Client:
                 "Client is not authenticated"
             )
 
-        return await self.transport.request(
+        if not object_guid:
+            raise ValueError(
+                "object_guid is required"
+            )
+
+        data = {
+            "object_guid": str(object_guid),
+            "state": str(state),
+        }
+
+        return await self.transport.send_authenticated(
             "getMessagesUpdates",
-            {
-                "object_guid": object_guid,
-                "state": str(state),
-            },
-            authenticated=True,
+            data,
             client_info=self._client_info(),
         )
 
-    def on_message(
-        self,
-        handler=None,
-    ):
+    def on_message(self, handler=None):
         if handler is None:
-
             def decorator(func):
                 self._message_handlers.append(func)
                 return func
@@ -272,12 +295,8 @@ class Client:
 
         return handler
 
-    def on_event(
-        self,
-        handler=None,
-    ):
+    def on_event(self, handler=None):
         if handler is None:
-
             def decorator(func):
                 self._event_handlers.append(func)
                 return func
@@ -288,219 +307,133 @@ class Client:
 
         return handler
 
+    async def _call_handler(
+        self,
+        handler,
+        message,
+    ):
+        result = handler(message)
+
+        if asyncio.iscoroutine(result):
+            await result
+
+    async def _handle_message(
+        self,
+        message,
+    ):
+        for handler in list(
+            self._message_handlers
+        ):
+            try:
+                await self._call_handler(
+                    handler,
+                    message,
+                )
+            except Exception:
+                continue
+
     async def _handle_event(
         self,
         event,
     ):
-        for handler in self._event_handlers:
+        for handler in list(
+            self._event_handlers
+        ):
             try:
                 result = handler(event)
 
                 if asyncio.iscoroutine(result):
                     await result
 
-            except Exception as exc:
-                print(
-                    "Event handler error:",
-                    exc,
-                )
-
-        messages = self._extract_messages(
-            event
-        )
-
-        for item in messages:
-            message = self._message_from_item(
-                item
-            )
-
-            if message is None:
+            except Exception:
                 continue
-
-            for handler in self._message_handlers:
-                try:
-                    result = handler(message)
-
-                    if asyncio.iscoroutine(result):
-                        await result
-
-                except Exception as exc:
-                    print(
-                        "Message handler error:",
-                        exc,
-                    )
 
     def _extract_messages(
         self,
-        event,
+        result,
     ):
-        if not isinstance(event, dict):
-            return []
+        messages = []
 
-        result = []
+        if not isinstance(result, dict):
+            return messages
 
-        data = event.get("data")
+        def walk(value):
+            if isinstance(value, dict):
+                if (
+                    "message_id" in value
+                    or "messageId" in value
+                ):
+                    messages.append(value)
 
-        if isinstance(data, dict):
-            messages = data.get("messages")
+                for item in value.values():
+                    walk(item)
 
-            if isinstance(messages, list):
-                result.extend(
-                    item
-                    for item in messages
-                    if isinstance(item, dict)
-                )
+            elif isinstance(value, list):
+                for item in value:
+                    walk(item)
 
-            message = data.get("message")
+        walk(result)
 
-            if isinstance(message, dict):
-                result.append(message)
+        return messages
 
-            result.append(data)
-
-        messages = event.get("messages")
-
-        if isinstance(messages, list):
-            result.extend(
-                item
-                for item in messages
-                if isinstance(item, dict)
-            )
-
-        message = event.get("message")
-
-        if isinstance(message, dict):
-            result.append(message)
-
-        result.append(event)
-
-        unique = []
-        seen = set()
-
-        for item in result:
-            if not isinstance(item, dict):
-                continue
-
-            marker = id(item)
-
-            if marker in seen:
-                continue
-
-            seen.add(marker)
-            unique.append(item)
-
-        return unique
-
-    def _message_from_item(
+    def _message_from_dict(
         self,
-        item,
+        data,
     ):
-        if not isinstance(item, dict):
+        if not isinstance(data, dict):
             return None
 
-        message = item.get("message")
+        try:
+            if hasattr(
+                Message,
+                "from_dict",
+            ):
+                return Message.from_dict(data)
+        except Exception:
+            pass
 
-        if isinstance(message, dict):
-            item = message
+        try:
+            return Message(**data)
+        except Exception:
+            return data
 
-        text = (
-            item.get("text")
-            or item.get("message")
-            or item.get("body")
-        )
-
-        if text is None:
-            return None
-
-        object_guid = (
-            item.get("object_guid")
-            or item.get("objectGuid")
-            or item.get("chat_guid")
-            or item.get("chatGuid")
-        )
-
-        author_guid = (
-            item.get("author_guid")
-            or item.get("authorGuid")
-            or item.get("sender_guid")
-            or item.get("senderGuid")
-        )
-
-        message_id = (
-            item.get("message_id")
-            or item.get("messageId")
-            or item.get("id")
-        )
-
-        return Message(
-            client=self,
-            message_id=message_id,
-            text=text,
-            object_guid=object_guid,
-            author_guid=author_guid,
-            chat_id=object_guid,
-            raw=item,
-        )
-
-    async def _poll_chat_updates(
+    async def _poll_messages(
         self,
-        interval=1.0,
+        interval=2,
     ):
-        state = self._chat_states.get(
-            "state",
-            0,
-        )
-
         while self._running:
             try:
                 result = await self.get_chats_updates(
-                    state
+                    state=0
                 )
 
-                await self._handle_event(
+                await self._handle_event(result)
+
+                raw_messages = self._extract_messages(
                     result
                 )
 
-                data = (
-                    result.get("data")
-                    if isinstance(result, dict)
-                    else None
-                )
-
-                if isinstance(data, dict):
-                    new_state = data.get(
-                        "state"
+                for raw in raw_messages:
+                    message = self._message_from_dict(
+                        raw
                     )
 
-                    if new_state is not None:
-                        try:
-                            state = int(
-                                new_state
-                            )
-                        except (
-                            TypeError,
-                            ValueError,
-                        ):
-                            state = new_state
-
-                        self._chat_states[
-                            "state"
-                        ] = state
+                    if message is not None:
+                        await self._handle_message(
+                            message
+                        )
 
             except asyncio.CancelledError:
                 raise
 
-            except Exception as exc:
-                print(
-                    "Chat update error:",
-                    exc,
-                )
+            except Exception:
+                pass
 
             await asyncio.sleep(interval)
 
     async def start(
         self,
-        interval=1.0,
+        interval=2,
     ):
         if not self.authenticated:
             raise RuntimeError(
@@ -509,13 +442,13 @@ class Client:
 
         self._running = True
 
-        await self._poll_chat_updates(
+        await self._poll_messages(
             interval=interval
         )
 
     async def run_async(
         self,
-        interval=1.0,
+        interval=2,
     ):
         await self.start(
             interval=interval
@@ -523,35 +456,24 @@ class Client:
 
     def run(
         self,
-        interval=1.0,
+        interval=2,
     ):
-        asyncio.run(
-            self.start(
-                interval=interval
+        try:
+            asyncio.run(
+                self.start(
+                    interval=interval
+                )
             )
-        )
+        except KeyboardInterrupt:
+            self._running = False
+
+    async def stop(self):
+        self._running = False
 
     async def close(self):
         self._running = False
 
-        close_method = getattr(
-            self.transport,
-            "close",
-            None,
-        )
-
-        if close_method:
-            result = close_method()
-
-            if asyncio.iscoroutine(result):
-                await result
-
-    @staticmethod
-    def _client_info():
-        return {
-            "app_name": "Main",
-            "app_version": "4.4.26",
-            "platform": "Web",
-            "package": "web.shad.ir",
-            "lang_code": "fa",
-        }
+        try:
+            await self.transport.close()
+        except Exception:
+            pass
