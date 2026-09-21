@@ -42,8 +42,15 @@ class Session:
 
     @property
     def phone(self):
+        return (
+            self.data.get("phone_number")
+            or self.data.get("phone")
+        )
+
+    @property
+    def user_guid(self):
         return self.data.get(
-            "phone"
+            "user_guid"
         )
 
     def load(self):
@@ -86,12 +93,20 @@ class Session:
         auth,
         private_key,
         phone=None,
+        user_guid=None,
+        public_key=None,
     ):
         self.data["auth"] = auth
         self.data["private_key"] = private_key
 
         if phone:
-            self.data["phone"] = phone
+            self.data["phone_number"] = phone
+
+        if user_guid:
+            self.data["user_guid"] = user_guid
+
+        if public_key:
+            self.data["public_key"] = public_key
 
         self.save()
 
