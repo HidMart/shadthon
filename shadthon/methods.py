@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-import hashlib
-import platform
+import os
 import time
 import uuid
 
@@ -28,35 +27,26 @@ class Methods:
                 "phone_number": phone,
                 "phone_code_hash": phone_code_hash,
                 "phone_code": phone_code,
-                "public_key": self.session.data.get(
-                    "public_key",
-                    "",
-                ),
+                "public_key": self.session.data.get("public_key", ""),
             },
         )
 
     async def register_device(self):
-        device_id = self.session.data.get("device_id")
-
-        if not device_id:
-            device_id = str(uuid.uuid4())
-            self.session.data["device_id"] = device_id
-            self.session.save()
-
-        phone = self.session.phone or ""
-        user_guid = self.session.user_guid or ""
-
-        device_hash = hashlib.sha1(
-            f"{phone}:{user_guid}:{device_id}".encode()
-        ).hexdigest()
+        device_hash = "".join(
+            __import__("random").choices(
+                "0123456789",
+                k=26,
+            )
+        )
 
         data = {
-            "app_version": "4.4.26",
+            "app_version": "WB_4.4.26",
             "device_hash": device_hash,
-            "device_model": "Shadthon",
+            "device_model": "Chrome 153",
+            "is_multi_account": False,
             "lang_code": "fa",
-            "system_version": platform.system(),
-            "token": " ",
+            "system_version": "Mac/iOS",
+            "token": "",
             "token_type": "Web",
         }
 
@@ -74,7 +64,12 @@ class Methods:
     ):
         data = {
             "object_guid": object_guid,
-            "rnd": str(uuid.uuid4()),
+            "rnd": str(
+                int.from_bytes(
+                    os.urandom(4),
+                    "big",
+                )
+            ),
             "text": text,
         }
 
@@ -103,10 +98,10 @@ class Methods:
             "sort": sort,
         }
 
-        if max_id:
+        if max_id is not None:
             data["max_id"] = max_id
 
-        if min_id:
+        if min_id is not None:
             data["min_id"] = min_id
 
         return await self.transport.send_authenticated(
