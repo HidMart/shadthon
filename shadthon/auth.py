@@ -3,18 +3,11 @@ from .exceptions import AuthenticationError
 
 
 class AuthManager:
-    def __init__(
-        self,
-        transport,
-        session,
-    ):
+    def __init__(self, transport, session):
         self.transport = transport
         self.session = session
 
-    async def send_code(
-        self,
-        phone,
-    ):
+    async def send_code(self, phone):
         tmp_session = Crypto.random_tmp_session()
 
         result = await self.transport.request(
@@ -27,25 +20,22 @@ class AuthManager:
             authenticated=False,
         )
 
-        if result.get("status") != "OK":
+        response = result.get("data", {})
+
+        if not isinstance(response, dict):
             return result
 
-        data = result.get(
-            "data",
-            {},
-        )
+        if response.get("status") != "OK":
+            return result
 
-        self.session.data[
-            "tmp_session"
-        ] = tmp_session
+        data = response.get("data", {})
 
-        self.session.data[
-            "phone"
-        ] = phone
+        if not isinstance(data, dict):
+            return result
 
-        self.session.data[
-            "phone_code_hash"
-        ] = data.get(
+        self.session.data["tmp_session"] = tmp_session
+        self.session.data["phone_number"] = phone
+        self.session.data["phone_code_hash"] = data.get(
             "phone_code_hash"
         )
 
@@ -94,17 +84,25 @@ class AuthManager:
             authenticated=False,
         )
 
-        if result.get("status") != "OK":
+        response = result.get("data", {})
+
+        if not isinstance(response, dict):
             return result
 
-        data = result.get(
-            "data",
-            {},
-        )
+        if response.get("status") != "OK":
+            return result
 
-        encrypted_auth = data.get(
-            "auth"
-        )
+        data = response.get("data", {})
+
+        if not isinstance(data, dict):
+            raise AuthenticationError(
+                "Invalid signIn response"
+            )
+
+        if data.get("status") != "OK":
+            return result
+
+        encrypted_auth = data.get("auth")
 
         if not encrypted_auth:
             raise AuthenticationError(
@@ -121,10 +119,21 @@ class AuthManager:
                 "Could not decrypt authentication token"
             ) from exc
 
+        user = data.get("user", {})
+
+        user_guid = None
+
+        if isinstance(user, dict):
+            user_guid = user.get(
+                "user_guid"
+            )
+
         self.session.set_auth(
             auth=auth,
             private_key=private_key,
             phone=phone,
+            user_guid=user_guid,
+            public_key=public_key,
         )
 
         self.session.data.pop(
