@@ -25,29 +25,18 @@ class Client:
         )
 
         if phone:
-            self.session.data[
-                "phone_number"
-            ] = phone
+            self.session.data["phone_number"] = phone
 
         if base_url:
             host = (
                 base_url
-                .replace(
-                    "https://",
-                    "",
-                )
-                .replace(
-                    "http://",
-                    "",
-                )
+                .replace("https://", "")
+                .replace("http://", "")
                 .rstrip("/")
             )
-
             self.session.messenger_host = host
 
-        self.transport = Transport(
-            self.session
-        )
+        self.transport = Transport(self.session)
 
         self.methods = Methods(
             self.session,
@@ -60,28 +49,19 @@ class Client:
             self.session,
         )
 
-        self.dispatcher = Dispatcher(
-            self
-        )
+        self.dispatcher = Dispatcher(self)
 
     @property
     def authenticated(self):
         return self.session.authenticated
 
     async def send_code(self, phone=None):
-        phone = (
-            phone
-            or self.session.phone
-        )
+        phone = phone or self.session.phone
 
         if not phone:
-            raise ValueError(
-                "Phone number is required."
-            )
+            raise ValueError("Phone number is required.")
 
-        return await self.auth_manager.send_code(
-            phone
-        )
+        return await self.auth_manager.send_code(phone)
 
     async def sign_in(
         self,
@@ -89,20 +69,13 @@ class Client:
         phone_code=None,
         phone_code_hash=None,
     ):
-        phone = (
-            phone
-            or self.session.phone
-        )
+        phone = phone or self.session.phone
 
         if not phone:
-            raise ValueError(
-                "Phone number is required."
-            )
+            raise ValueError("Phone number is required.")
 
         if not phone_code:
-            raise ValueError(
-                "Login code is required."
-            )
+            raise ValueError("Login code is required.")
 
         result = await self.auth_manager.sign_in(
             phone,
@@ -110,22 +83,60 @@ class Client:
             phone_code_hash,
         )
 
+        try:
+            register_result = await self.methods.register_device()
+
+            register_data = register_result.get(
+                "data",
+                register_result,
+            )
+
+            register_status = register_data.get("status")
+
+            if register_status not in (
+                None,
+                "OK",
+                "SUCCESS",
+            ):
+                raise RuntimeError(
+                    f"registerDevice failed: {register_data}"
+                )
+
+            self.session.data["device_registered"] = True
+            self.session.save()
+
+        except Exception:
+            self.session.data["device_registered"] = False
+            self.session.save()
+            raise
+
+        return result
+
+    async def register_device(self):
+        result = await self.methods.register_device()
+
+        data = result.get("data", result)
+        status = data.get("status")
+
+        if status not in (None, "OK", "SUCCESS"):
+            raise RuntimeError(
+                f"registerDevice failed: {data}"
+            )
+
+        self.session.data["device_registered"] = True
+        self.session.save()
+
         return result
 
     def on_message(self, handler=None):
         if handler is None:
             def decorator(func):
-                self.dispatcher.register_handler(
-                    func
-                )
+                self.dispatcher.register_handler(func)
                 return func
 
             return decorator
 
-        self.dispatcher.register_handler(
-            handler
-        )
-
+        self.dispatcher.register_handler(handler)
         return handler
 
     def message_from_dict(self, data):
@@ -164,13 +175,8 @@ class Client:
             min_id,
         )
 
-    async def get_chats_updates(
-        self,
-        state=None,
-    ):
-        return await self.methods.get_chats_updates(
-            state
-        )
+    async def get_chats_updates(self, state=None):
+        return await self.methods.get_chats_updates(state)
 
     async def get_messages_updates(
         self,
@@ -182,19 +188,13 @@ class Client:
             state,
         )
 
-    async def get_chats(
-        self,
-        start_id=None,
-    ):
-        return await self.methods.get_chats(
-            start_id
-        )
+    async def get_chats(self, start_id=None):
+        return await self.methods.get_chats(start_id)
 
     async def start(self):
         if not self.authenticated:
             raise RuntimeError(
-                "Client is not authenticated. "
-                "Login first."
+                "Client is not authenticated. Login first."
             )
 
         self.dispatcher.start()
@@ -202,6 +202,7 @@ class Client:
         try:
             while self.dispatcher.running:
                 await asyncio.sleep(1)
+
         except asyncio.CancelledError:
             await self.stop()
             raise
@@ -210,9 +211,7 @@ class Client:
         await self.start()
 
     def run(self):
-        asyncio.run(
-            self.start()
-        )
+        asyncio.run(self.start())
 
     async def stop(self):
         await self.dispatcher.stop()
