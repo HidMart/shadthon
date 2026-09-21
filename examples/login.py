@@ -16,66 +16,59 @@ def normalize_phone(phone):
 
 
 async def main():
-    phone = normalize_phone(
-        input("Phone number: ")
-    )
-
-    print(f"Using: {phone}")
-
     client = Client(
-        phone=phone,
-        session_name="my_account",
+        session_name="my_account"
     )
 
-    print("\nsendCode:")
+    if client.authenticated:
+        print(
+            "Session already authenticated."
+        )
+        return client
 
-    result = await client.send_code(phone)
+    phone = normalize_phone(
+        input(
+            "شماره شاد را وارد کن: "
+        )
+    )
 
-    print(result)
+    print(
+        "در حال ارسال کد..."
+    )
+
+    result = await client.send_code(
+        phone
+    )
 
     response = result.get(
         "data",
         {},
     )
 
-    if not isinstance(response, dict):
-        print("Invalid sendCode response")
-        return
-
-    if response.get("status") != "OK":
-        print("sendCode failed")
-        return
-
-    code_data = response.get(
-        "data",
-        {},
+    data = (
+        response.get("data", {})
+        if isinstance(response, dict)
+        else {}
     )
 
-    if not isinstance(code_data, dict):
-        print("Invalid sendCode data")
-        return
-
-    phone_code_hash = code_data.get(
+    phone_code_hash = data.get(
         "phone_code_hash"
     )
 
     if not phone_code_hash:
-        print("phone_code_hash not found")
-        return
+        print(
+            "خطا در دریافت phone_code_hash"
+        )
+        print(result)
+        return client
 
     print(
-        "\nکد ورود را از داخل شاد دریافت کن."
+        "کد ارسال شد."
     )
 
     code = input(
-        "Login code: "
+        "کد ورود: "
     ).strip()
-
-    if not code:
-        print("Login code is required")
-        return
-
-    print("\nsignIn:")
 
     result = await client.sign_in(
         phone=phone,
@@ -83,31 +76,11 @@ async def main():
         phone_code_hash=phone_code_hash,
     )
 
-    print(result)
-
-    response = result.get(
-        "data",
-        {},
+    print(
+        "ورود انجام شد."
     )
 
-    if (
-        isinstance(response, dict)
-        and response.get("status") == "OK"
-    ):
-        login_data = response.get(
-            "data",
-            {},
-        )
-
-        if (
-            isinstance(login_data, dict)
-            and login_data.get("status") == "OK"
-        ):
-            print("\nLogin successful")
-            print("Session saved.")
-            return
-
-    print("\nLogin failed")
+    return client
 
 
 if __name__ == "__main__":
