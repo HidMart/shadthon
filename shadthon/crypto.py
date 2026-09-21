@@ -1,7 +1,8 @@
+from __future__ import annotations
+
 import base64
-import json
-import os
-import random
+import hashlib
+import secrets
 import string
 
 from Crypto.Cipher import AES, PKCS1_OAEP
@@ -15,25 +16,70 @@ class Crypto:
     IV = b"\x00" * 16
 
     @staticmethod
-    def auth_set(value: str) -> str:
+    def decode_auth(value: str) -> str:
         result = []
 
         for char in value:
             if "a" <= char <= "z":
-                result.append(chr(((32 - (ord(char) - 97)) % 26) + 97))
+                result.append(
+                    chr(((32 - (ord(char) - 97)) % 26) + 97)
+                )
             elif "A" <= char <= "Z":
-                result.append(chr(((29 - (ord(char) - 65)) % 26) + 65))
+                result.append(
+                    chr(((29 - (ord(char) - 65)) % 26) + 65)
+                )
             elif "0" <= char <= "9":
-                result.append(chr(((13 - (ord(char) - 48)) % 10) + 48))
+                result.append(
+                    chr(((13 - (ord(char) - 48)) % 10) + 48)
+                )
+            else:
+                result.append(char)
+
+        return "".join(result)
+
+    auth_set = decode_auth
+
+    @staticmethod
+    def derive_passphrase(value: str) -> str:
+        if len(value) != 32:
+            raise ValueError(
+                "Session value must contain exactly 32 characters."
+            )
+
+        chunks = [
+            value[i:i + 8]
+            for i in range(0, 32, 8)
+        ]
+
+        source = (
+            chunks[2]
+            + chunks[0]
+            + chunks[3]
+            + chunks[1]
+        )
+
+        result = []
+
+        for char in source:
+            if "a" <= char <= "z":
+                result.append(
+                    chr(((ord(char) - 97 + 9) % 26) + 97)
+                )
             else:
                 result.append(char)
 
         return "".join(result)
 
     @staticmethod
+    def derive_session_key(value: str) -> bytes:
+        return Crypto.derive_passphrase(value).encode("utf-8")
+
+    @staticmethod
     def make_key(auth: str) -> str:
         if len(auth) < 32:
-            raise ValueError("auth must contain at least 32 characters")
+            raise ValueError(
+                "auth must contain at least 32 characters"
+            )
 
         value = (
             auth[16:24]
@@ -46,56 +92,96 @@ class Crypto:
 
         for char in value:
             if "0" <= char <= "9":
-                result.append(chr(((ord(char) - 48 + 5) % 10) + 48))
+                result.append(
+                    chr(((ord(char) - 48 + 5) % 10) + 48)
+                )
             elif "a" <= char <= "z":
-                result.append(chr(((ord(char) - 97 + 9) % 26) + 97))
+                result.append(
+                    chr(((ord(char) - 97 + 9) % 26) + 97)
+                )
             else:
                 result.append(char)
 
         return "".join(result)
 
-    @classmethod
-    def encrypt(cls, auth: str, data: str) -> str:
-        key = cls.make_key(auth).encode("utf-8")
-
-        cipher = AES.new(
-            key,
-            AES.MODE_CBC,
-            cls.IV,
-        )
-
-        encrypted = cipher.encrypt(
-            pad(data.encode("utf-8"), AES.block_size)
-        )
-
-        return base64.b64encode(encrypted).decode("ascii")
-
-    @classmethod
-    def decrypt(cls, auth: str, data: str) -> str:
-        key = cls.make_key(auth).encode("utf-8")
-
-        cipher = AES.new(
-            key,
-            AES.MODE_CBC,
-            cls.IV,
-        )
-
-        encrypted = base64.b64decode(data)
-
-        decrypted = cipher.decrypt(encrypted)
-
-        return unpad(
-            decrypted,
-            AES.block_size,
-        ).decode("utf-8")
-
     @staticmethod
-    def random_tmp_session() -> str:
-        chars = string.ascii_lowercase
+    def random_tmp_session():
         return "".join(
-            random.choice(chars)
+            secrets.choice(string.ascii_lowercase)
             for _ in range(32)
         )
+
+    @staticmethod
+    def aes_encrypt(key, plaintext, iv=None):
+        iv = iv or Crypto.IV
+        cipher = AES.new(
+            key,
+            AES.MODE_CBC,
+            iv,
+        )
+
+        return cipher.encrypt(
+            pad(
+                plaintext,
+                AES.block_size,
+            )
+        )
+
+    @staticmethod
+    def aes_decrypt(key, ciphertext, iv=None):
+        iv = iv or Crypto.IV
+
+        cipher = AES.new(
+            key,
+            AES.MODE_CBC,
+            iv,
+        )
+
+        return unpad(
+            cipher.decrypt(ciphertext),
+            AES.block_size,
+        )
+
+    @staticmethod
+    def encrypt_payload(
+        key,
+        plaintext,
+        iv=None,
+    ):
+        encrypted = Crypto.aes_encrypt(
+            key,
+            plaintext,
+            iv,
+        )
+
+        return base64.b64encode(
+            encrypted
+        ).decode("ascii")
+
+    @staticmethod
+    def decrypt_payload(
+        key,
+        data_enc,
+        iv=None,
+    ):
+        encrypted = base64.b64decode(data_enc)
+
+        return Crypto.aes_decrypt(
+            key,
+            encrypted,
+            iv,
+        )
+
+    @staticmethod
+    def compute_sign(key, data_enc):
+        raw = (
+            data_enc
+            + base64.b64encode(key).decode("ascii")
+        )
+
+        return hashlib.sha256(
+            raw.encode("utf-8")
+        ).hexdigest()
 
     @staticmethod
     def generate_rsa_keypair():
@@ -117,7 +203,7 @@ class Crypto:
             + b"\r\n-----END PUBLIC KEY-----"
         )
 
-        public_value = Crypto.auth_set(
+        public_value = Crypto.decode_auth(
             base64.b64encode(pem).decode("ascii")
         )
 
@@ -128,7 +214,7 @@ class Crypto:
         return public_value, private_value
 
     @staticmethod
-    def load_private_key(private_key: str):
+    def load_private_key(private_key):
         raw = base64.b64decode(
             private_key.replace("\\n", "")
         )
@@ -137,35 +223,107 @@ class Crypto:
 
     @staticmethod
     def decrypt_rsa_oaep(
-        private_key: str,
-        encrypted_data: str,
-    ) -> str:
-        key = Crypto.load_private_key(private_key)
+        private_key,
+        encrypted_data,
+    ):
+        key = Crypto.load_private_key(
+            private_key
+        )
 
         cipher = PKCS1_OAEP.new(
             key,
             hashAlgo=SHA1,
         )
 
-        data = base64.b64decode(encrypted_data)
+        decrypted = cipher.decrypt(
+            base64.b64decode(
+                encrypted_data
+            )
+        )
 
-        return cipher.decrypt(data).decode("utf-8")
+        return decrypted.decode("utf-8")
 
     @staticmethod
     def sign_rsa(
-        private_key: str,
-        data: str,
-    ) -> str:
-        key = Crypto.load_private_key(private_key)
+        private_key,
+        data,
+    ):
+        key = Crypto.load_private_key(
+            private_key
+        )
 
         digest = SHA256.new(
             data.encode("utf-8")
         )
 
-        signature = pkcs1_15.new(key).sign(
-            digest
-        )
+        signature = pkcs1_15.new(
+            key
+        ).sign(digest)
 
         return base64.b64encode(
             signature
         ).decode("ascii")
+
+    @staticmethod
+    def candidate_key_iv_pairs(tmp_session):
+        passphrase = Crypto.derive_passphrase(
+            tmp_session
+        ).encode("utf-8")
+
+        raw = tmp_session.encode("utf-8")
+        sha = hashlib.sha256(raw).digest()
+
+        return [
+            (
+                passphrase,
+                b"\x00" * 16,
+            ),
+            (
+                passphrase,
+                b"0" * 16,
+            ),
+            (
+                raw,
+                b"\x00" * 16,
+            ),
+            (
+                raw,
+                b"0" * 16,
+            ),
+            (
+                sha,
+                b"\x00" * 16,
+            ),
+            (
+                sha,
+                b"0" * 16,
+            ),
+        ]
+
+    @staticmethod
+    def decrypt_payload_probe(
+        tmp_session,
+        data_enc,
+    ):
+        ciphertext = base64.b64decode(
+            data_enc
+        )
+
+        for key, iv in Crypto.candidate_key_iv_pairs(
+            tmp_session
+        ):
+            try:
+                plain = Crypto.aes_decrypt(
+                    key,
+                    ciphertext,
+                    iv,
+                )
+
+                return plain, key, iv
+
+            except Exception:
+                continue
+
+        raise ValueError(
+            "Unable to decrypt payload."
+        )
