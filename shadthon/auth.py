@@ -3,8 +3,6 @@ from __future__ import annotations
 import base64
 import re
 
-from Crypto.PublicKey import RSA
-
 from .crypto import Crypto
 from .exceptions import AuthenticationError
 
@@ -19,12 +17,17 @@ class AuthManager:
             return None
 
         for key in keys:
-            if key in data and data[key] is not None:
-                return data[key]
+            value = data.get(key)
+
+            if value is not None:
+                return value
 
         for value in data.values():
             if isinstance(value, dict):
-                found = self._find_value(value, *keys)
+                found = self._find_value(
+                    value,
+                    *keys,
+                )
 
                 if found is not None:
                     return found
@@ -99,7 +102,10 @@ class AuthManager:
 
         status = data.get("status")
 
-        if status and status not in ("OK", "SUCCESS"):
+        if status and status not in (
+            "OK",
+            "SUCCESS",
+        ):
             raise AuthenticationError(
                 f"sendCode failed: {data}"
             )
@@ -116,9 +122,9 @@ class AuthManager:
                 "phone_code_hash was not returned."
             )
 
-        self.session.data["phone_code_hash"] = str(
-            phone_code_hash
-        )
+        self.session.data[
+            "phone_code_hash"
+        ] = str(phone_code_hash)
 
         self.session.save()
 
@@ -152,20 +158,17 @@ class AuthManager:
                 "Send code again."
             )
 
-        key = RSA.generate(1024)
-
-        private_key = key.export_key().decode()
-
-        public_key = key.publickey().export_key(
-            format="DER"
+        public_key, private_key = (
+            Crypto.generate_rsa_keypair()
         )
 
-        public_key_b64 = base64.b64encode(
-            public_key
-        ).decode()
+        self.session.data[
+            "private_key"
+        ] = private_key
 
-        self.session.data["private_key"] = private_key
-        self.session.data["public_key"] = public_key_b64
+        self.session.data[
+            "public_key"
+        ] = public_key
 
         sign_in_data = {
             "phone_number": phone,
@@ -175,7 +178,7 @@ class AuthManager:
             "phone_code": str(
                 phone_code
             ),
-            "public_key": public_key_b64,
+            "public_key": public_key,
         }
 
         result = await self.transport.send_handshake(
@@ -191,7 +194,10 @@ class AuthManager:
 
         status = data.get("status")
 
-        if status and status not in ("OK", "SUCCESS"):
+        if status and status not in (
+            "OK",
+            "SUCCESS",
+        ):
             raise AuthenticationError(
                 f"signIn failed: {data}"
             )
@@ -218,46 +224,55 @@ class AuthManager:
         auth_value = auth
 
         try:
-            decoded_auth = base64.b64decode(
-                auth,
-                validate=True,
-            )
-        except Exception:
-            decoded_auth = auth.encode()
-
-        decrypted_auth = None
-
-        try:
             decrypted_auth = Crypto.decrypt_rsa(
                 private_key,
-                decoded_auth,
+                auth,
             )
-        except Exception:
-            try:
-                decrypted_auth = Crypto.decrypt_rsa(
-                    private_key,
-                    auth,
-                )
-            except Exception:
-                decrypted_auth = None
 
-        if decrypted_auth:
             if isinstance(
                 decrypted_auth,
                 bytes,
             ):
                 decrypted_auth = decrypted_auth.decode(
-                    errors="ignore"
+                    "utf-8",
+                    errors="ignore",
                 )
 
-            auth_value = decrypted_auth
+            if decrypted_auth:
+                auth_value = decrypted_auth
+
+        except Exception:
+            try:
+                decoded_auth = base64.b64decode(
+                    auth
+                )
+
+                decrypted_auth = Crypto.decrypt_rsa(
+                    private_key,
+                    decoded_auth,
+                )
+
+                if isinstance(
+                    decrypted_auth,
+                    bytes,
+                ):
+                    decrypted_auth = decrypted_auth.decode(
+                        "utf-8",
+                        errors="ignore",
+                    )
+
+                if decrypted_auth:
+                    auth_value = decrypted_auth
+
+            except Exception:
+                pass
 
         self.session.set_auth(
             auth_value,
             private_key,
             phone=phone,
             user_guid=user_guid,
-            public_key=public_key_b64,
+            public_key=public_key,
         )
 
         self.session.save()
