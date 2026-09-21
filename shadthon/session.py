@@ -17,10 +17,7 @@ class Session:
 
     @property
     def authenticated(self):
-        return bool(
-            self.data.get("auth")
-            and self.data.get("key_hex")
-        )
+        return self.has_auth()
 
     @property
     def auth(self):
@@ -49,6 +46,10 @@ class Session:
     @property
     def tmp_session(self):
         return self.data.get("tmp_session", "")
+
+    @tmp_session.setter
+    def tmp_session(self, value):
+        self.data["tmp_session"] = value
 
     @property
     def state(self):
@@ -80,9 +81,21 @@ class Session:
     def iv_hex(self):
         return self.data.get("iv_hex", "")
 
+    def has_auth(self):
+        return bool(
+            self.auth
+            and self.key_hex
+        )
+
+    def get_base_url(self):
+        return f"https://{self.messenger_host}/"
+
     def get_key(self):
         if not self.key_hex:
-            raise RuntimeError("Session encryption key is not available.")
+            raise RuntimeError(
+                "Session encryption key is not available."
+            )
+
         return bytes.fromhex(self.key_hex)
 
     def set_key(self, key):
@@ -91,6 +104,7 @@ class Session:
     def get_iv(self):
         if self.iv_hex:
             return bytes.fromhex(self.iv_hex)
+
         return b"\x00" * 16
 
     def set_iv(self, iv):
@@ -101,15 +115,27 @@ class Session:
             return
 
         try:
-            with open(self.path, "r", encoding="utf-8") as file:
+            with open(
+                self.path,
+                "r",
+                encoding="utf-8",
+            ) as file:
                 self.data = json.load(file)
+
+            if not isinstance(self.data, dict):
+                self.data = {}
+
         except Exception:
             self.data = {}
 
     def save(self):
         temporary = self.path + ".tmp"
 
-        with open(temporary, "w", encoding="utf-8") as file:
+        with open(
+            temporary,
+            "w",
+            encoding="utf-8",
+        ) as file:
             json.dump(
                 self.data,
                 file,
@@ -117,7 +143,10 @@ class Session:
                 indent=2,
             )
 
-        os.replace(temporary, self.path)
+        os.replace(
+            temporary,
+            self.path,
+        )
 
     def set_auth(
         self,
@@ -127,9 +156,10 @@ class Session:
         user_guid=None,
         public_key=None,
     ):
-        self.data["auth"] = auth
-        self.data["decode_auth"] = auth
+        from .crypto import Crypto
 
+        self.data["auth"] = auth
+        self.data["decode_auth"] = Crypto.decode_auth(auth)
         self.data["private_key"] = private_key
 
         if phone:
