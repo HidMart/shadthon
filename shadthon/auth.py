@@ -19,10 +19,8 @@ class AuthManager:
             return None
 
         for key in keys:
-            value = data.get(key)
-
-            if value is not None:
-                return value
+            if key in data and data[key] is not None:
+                return data[key]
 
         for value in data.values():
             if isinstance(value, dict):
@@ -169,18 +167,20 @@ class AuthManager:
         self.session.data["private_key"] = private_key
         self.session.data["public_key"] = public_key_b64
 
+        sign_in_data = {
+            "phone_number": phone,
+            "phone_code_hash": str(
+                phone_code_hash
+            ),
+            "phone_code": str(
+                phone_code
+            ),
+            "public_key": public_key_b64,
+        }
+
         result = await self.transport.send_handshake(
             "signIn",
-            {
-                "phone_number": phone,
-                "phone_code_hash": str(
-                    phone_code_hash
-                ),
-                "phone_code": str(
-                    phone_code
-                ),
-                "public_key": public_key_b64,
-            },
+            sign_in_data,
             tmp_session=tmp_session,
         )
 
