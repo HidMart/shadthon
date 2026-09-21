@@ -1,3 +1,11 @@
+from __future__ import annotations
+
+import base64
+import json
+import re
+
+from Crypto.PublicKey import RSA
+
 from .crypto import Crypto
 from .exceptions import AuthenticationError
 
@@ -7,34 +15,59 @@ class AuthManager:
         self.transport = transport
         self.session = session
 
-    @staticmethod
-    def _find_value(data, key):
+    def _find_value(self, data, *keys):
         if not isinstance(data, dict):
             return None
 
-        if key in data:
-            return data[key]
+        for key in keys:
+            if key in data:
+                return data[key]
 
-        nested = data.get("data")
-
-        if isinstance(nested, dict):
-            value = AuthManager._find_value(
-                nested,
-                key,
-            )
-
-            if value is not None:
-                return value
+        for value in data.values():
+            if isinstance(value, dict):
+                found = self._find_value(value, *keys)
+                if found is not None:
+                    return found
 
         return None
 
-    async def send_code(self, phone):
-        tmp_session = Crypto.random_tmp_session()
+    def _normalize_phone(self, phone):
+        phone = str(phone).strip()
 
-        self.session.tmp_session = tmp_session
+        digits = phone.translate(str.maketrans(
+            "۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩",
+            "01234567890123456789"
+        ))
+
+        digits = re.sub(r"\D", "", digits)
+
+        if digits.startswith("0098"):
+            digits = digits[2:]
+
+        if digits.startswith("09"):
+            digits = "98" + digits[1:]
+
+        elif digits.startswith("9") and len(digits) == 10:
+            digits = "98" + digits
+
+        elif digits.startswith("+98"):
+            digits = digits[1:]
+
+        if not digits.startswith("98") or len(digits) != 12:
+            raise ValueError(
+                "Invalid Iranian phone number. "
+                "Use 989xxxxxxxxx or 09xxxxxxxxx."
+            )
+
+        return digits
+
+    async def send_code(self, phone):
+        phone = self._normalize_phone(phone)
+
         self.session.data["phone_number"] = phone
 
-        self.session.save()
+        tmp_session = Crypto.generate_tmp_session()
+        self.session.tmp_session = tmp_session
 
         result = await self.transport.send_handshake(
             "sendCode",
@@ -44,137 +77,136 @@ class AuthManager:
             },
         )
 
+        data = result.get("data", result)
+
+        status = data.get("status")
+
+        if status and status not in ("OK", "SUCCESS"):
+            raise AuthenticationError(
+                f"sendCode failed: {data}"
+            )
+
         phone_code_hash = self._find_value(
-            result,
+            data,
             "phone_code_hash",
+            "phoneCodeHash",
         )
 
         if phone_code_hash:
-            self.session.data[
-                "phone_code_hash"
-            ] = phone_code_hash
+            self.session.data["phone_code_hash"] = phone_code_hash
 
-            self.session.save()
-
-        status = self._find_value(
-            result,
-            "status",
-        )
-
-        if status not in (None, "OK"):
-            raise AuthenticationError(
-                f"sendCode failed: {result}"
-            )
+        self.session.save()
 
         return result
 
-    async def sign_in(
-        self,
-        phone,
-        phone_code,
-        phone_code_hash=None,
-    ):
+    async def sign_in(self, phone, phone_code, phone_code_hash=None):
+        phone = self._normalize_phone(phone)
+
+        if not phone_code_hash:
+            phone_code_hash = self.session.data.get(
+                "phone_code_hash",
+                ""
+            )
+
+        if not phone_code_hash:
+            raise AuthenticationError(
+                "phone_code_hash is missing."
+            )
+
         tmp_session = self.session.tmp_session
 
         if not tmp_session:
             raise AuthenticationError(
-                "Temporary session not found."
+                "Temporary session is missing. Send code again."
             )
 
-        phone_code_hash = (
-            phone_code_hash
-            or self.session.data.get(
-                "phone_code_hash"
-            )
+        key = RSA.generate(1024)
+
+        private_key = key.export_key().decode()
+        public_key = key.publickey().export_key(
+            format="DER"
         )
 
-        if not phone_code_hash:
-            raise AuthenticationError(
-                "phone_code_hash not found."
-            )
+        public_key_b64 = base64.b64encode(
+            public_key
+        ).decode()
 
-        public_key, private_key = (
-            Crypto.generate_rsa_keypair()
-        )
-
-        self.session.data[
-            "public_key"
-        ] = public_key
-
-        self.session.save()
+        self.session.data["private_key"] = private_key
+        self.session.data["public_key"] = public_key_b64
 
         result = await self.transport.send_handshake(
             "signIn",
             {
                 "phone_number": phone,
                 "phone_code_hash": phone_code_hash,
-                "phone_code": phone_code,
-                "public_key": public_key,
+                "phone_code": str(phone_code),
+                "public_key": public_key_b64,
             },
         )
 
-        encrypted_auth = self._find_value(
-            result,
+        data = result.get("data", result)
+
+        status = data.get("status")
+
+        if status and status not in ("OK", "SUCCESS"):
+            raise AuthenticationError(
+                f"signIn failed: {data}"
+            )
+
+        auth = self._find_value(
+            data,
             "auth",
+            "auth_token",
         )
 
-        if not encrypted_auth:
+        if not auth:
             raise AuthenticationError(
-                "Authentication token not found."
+                f"Login succeeded but auth was not returned: {data}"
             )
+
+        user_guid = self._find_value(
+            data,
+            "user_guid",
+            "userGuid",
+            "guid",
+        )
+
+        auth_value = auth
 
         try:
-            auth = Crypto.decrypt_rsa_oaep(
-                private_key,
-                encrypted_auth,
+            decoded_auth = base64.b64decode(auth)
+        except Exception:
+            decoded_auth = auth.encode()
+
+        decrypted_auth = None
+
+        try:
+            decrypted_auth = Crypto.rsa_decrypt(
+                decoded_auth,
+                private_key
             )
-        except Exception as exc:
-            raise AuthenticationError(
-                "Could not decrypt authentication token."
-            ) from exc
+        except Exception:
+            try:
+                decrypted_auth = Crypto.rsa_decrypt(
+                    base64.b64decode(auth),
+                    private_key
+                )
+            except Exception:
+                decrypted_auth = None
 
-        user = self._find_value(
-            result,
-            "user",
-        )
-
-        user_guid = ""
-
-        if isinstance(user, dict):
-            user_guid = (
-                user.get("user_guid")
-                or user.get("guid")
-                or ""
-            )
+        if decrypted_auth:
+            if isinstance(decrypted_auth, bytes):
+                decrypted_auth = decrypted_auth.decode(
+                    errors="ignore"
+                )
+            auth_value = decrypted_auth
 
         self.session.set_auth(
-            auth=auth,
-            private_key=private_key,
+            auth_value,
+            private_key,
             phone=phone,
             user_guid=user_guid,
-            public_key=public_key,
-        )
-
-        permanent_key = (
-            Crypto.derive_session_key(auth)
-        )
-
-        self.session.set_key(
-            permanent_key
-        )
-
-        self.session.set_iv(
-            b"\x00" * 16
-        )
-
-        self.session.data.pop(
-            "tmp_session",
-            None,
-        )
-
-        self.session.data.pop(
-            "phone_code_hash",
-            None,
+            public_key=public_key_b64,
         )
 
         self.session.save()
