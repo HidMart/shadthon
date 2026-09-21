@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import json
 
 import aiohttp
@@ -49,24 +51,26 @@ class Transport:
         )
 
         if authenticated:
-            key = self.auth
-
-            if not key:
+            if not self.auth:
                 raise APIError(
                     "No authentication key available"
                 )
 
-        else:
-            key = tmp_session
+            key = self.auth
 
-            if not key:
+        else:
+            if not tmp_session:
                 raise APIError(
                     "No temporary session available"
                 )
 
-        data_enc = Crypto.encrypt(
+            key = Crypto.derive_session_key(
+                tmp_session
+            )
+
+        data_enc = Crypto.encrypt_payload(
             key,
-            inner_json,
+            inner_json.encode("utf-8"),
         )
 
         payload = {
@@ -80,6 +84,11 @@ class Transport:
             if self.private_key:
                 payload["sign"] = Crypto.sign_rsa(
                     self.private_key,
+                    data_enc,
+                )
+            else:
+                payload["sign"] = Crypto.compute_sign(
+                    key,
                     data_enc,
                 )
 
@@ -172,14 +181,17 @@ class Transport:
         encrypted = result["data_enc"]
 
         try:
-            decrypted = Crypto.decrypt(
+            decrypted = Crypto.decrypt_payload(
                 key,
                 encrypted,
             )
 
-            data = json.loads(
-                decrypted
-            )
+            if isinstance(decrypted, bytes):
+                decrypted = decrypted.decode(
+                    "utf-8"
+                )
+
+            data = json.loads(decrypted)
 
             return {
                 **result,
