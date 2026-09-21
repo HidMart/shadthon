@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import base64
-import json
 import re
 
 from Crypto.PublicKey import RSA
@@ -26,6 +25,7 @@ class AuthManager:
         for value in data.values():
             if isinstance(value, dict):
                 found = self._find_value(value, *keys)
+
                 if found is not None:
                     return found
 
@@ -34,10 +34,12 @@ class AuthManager:
     def _normalize_phone(self, phone):
         phone = str(phone).strip()
 
-        digits = phone.translate(str.maketrans(
-            "۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩",
-            "01234567890123456789"
-        ))
+        digits = phone.translate(
+            str.maketrans(
+                "۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩",
+                "01234567890123456789",
+            )
+        )
 
         digits = re.sub(r"\D", "", digits)
 
@@ -67,6 +69,7 @@ class AuthManager:
         self.session.data["phone_number"] = phone
 
         tmp_session = Crypto.generate_tmp_session()
+
         self.session.tmp_session = tmp_session
 
         result = await self.transport.send_handshake(
@@ -75,9 +78,13 @@ class AuthManager:
                 "phone_number": phone,
                 "send_type": "SMS",
             },
+            tmp_session=tmp_session,
         )
 
         data = result.get("data", result)
+
+        if not isinstance(data, dict):
+            data = {}
 
         status = data.get("status")
 
@@ -99,13 +106,18 @@ class AuthManager:
 
         return result
 
-    async def sign_in(self, phone, phone_code, phone_code_hash=None):
+    async def sign_in(
+        self,
+        phone,
+        phone_code,
+        phone_code_hash=None,
+    ):
         phone = self._normalize_phone(phone)
 
         if not phone_code_hash:
             phone_code_hash = self.session.data.get(
                 "phone_code_hash",
-                ""
+                "",
             )
 
         if not phone_code_hash:
@@ -117,12 +129,14 @@ class AuthManager:
 
         if not tmp_session:
             raise AuthenticationError(
-                "Temporary session is missing. Send code again."
+                "Temporary session is missing. "
+                "Send code again."
             )
 
         key = RSA.generate(1024)
 
         private_key = key.export_key().decode()
+
         public_key = key.publickey().export_key(
             format="DER"
         )
@@ -142,9 +156,13 @@ class AuthManager:
                 "phone_code": str(phone_code),
                 "public_key": public_key_b64,
             },
+            tmp_session=tmp_session,
         )
 
         data = result.get("data", result)
+
+        if not isinstance(data, dict):
+            data = {}
 
         status = data.get("status")
 
@@ -161,7 +179,8 @@ class AuthManager:
 
         if not auth:
             raise AuthenticationError(
-                f"Login succeeded but auth was not returned: {data}"
+                "Login succeeded but auth was not returned: "
+                f"{data}"
             )
 
         user_guid = self._find_value(
@@ -174,31 +193,38 @@ class AuthManager:
         auth_value = auth
 
         try:
-            decoded_auth = base64.b64decode(auth)
+            decoded_auth = base64.b64decode(
+                auth,
+                validate=True,
+            )
         except Exception:
             decoded_auth = auth.encode()
 
         decrypted_auth = None
 
         try:
-            decrypted_auth = Crypto.rsa_decrypt(
+            decrypted_auth = Crypto.decrypt_rsa(
+                private_key,
                 decoded_auth,
-                private_key
             )
         except Exception:
             try:
-                decrypted_auth = Crypto.rsa_decrypt(
-                    base64.b64decode(auth),
-                    private_key
+                decrypted_auth = Crypto.decrypt_rsa(
+                    private_key,
+                    auth,
                 )
             except Exception:
                 decrypted_auth = None
 
         if decrypted_auth:
-            if isinstance(decrypted_auth, bytes):
+            if isinstance(
+                decrypted_auth,
+                bytes,
+            ):
                 decrypted_auth = decrypted_auth.decode(
                     errors="ignore"
                 )
+
             auth_value = decrypted_auth
 
         self.session.set_auth(
