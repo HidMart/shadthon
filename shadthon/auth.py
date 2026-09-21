@@ -19,8 +19,10 @@ class AuthManager:
             return None
 
         for key in keys:
-            if key in data:
-                return data[key]
+            value = data.get(key)
+
+            if value is not None:
+                return value
 
         for value in data.values():
             if isinstance(value, dict):
@@ -28,6 +30,17 @@ class AuthManager:
 
                 if found is not None:
                     return found
+
+            elif isinstance(value, list):
+                for item in value:
+                    if isinstance(item, dict):
+                        found = self._find_value(
+                            item,
+                            *keys,
+                        )
+
+                        if found is not None:
+                            return found
 
         return None
 
@@ -99,8 +112,15 @@ class AuthManager:
             "phoneCodeHash",
         )
 
-        if phone_code_hash:
-            self.session.data["phone_code_hash"] = phone_code_hash
+        if not phone_code_hash:
+            raise AuthenticationError(
+                "sendCode succeeded but "
+                "phone_code_hash was not returned."
+            )
+
+        self.session.data["phone_code_hash"] = str(
+            phone_code_hash
+        )
 
         self.session.save()
 
@@ -122,7 +142,8 @@ class AuthManager:
 
         if not phone_code_hash:
             raise AuthenticationError(
-                "phone_code_hash is missing."
+                "phone_code_hash is missing. "
+                "Send code again."
             )
 
         tmp_session = self.session.tmp_session
@@ -152,8 +173,12 @@ class AuthManager:
             "signIn",
             {
                 "phone_number": phone,
-                "phone_code_hash": phone_code_hash,
-                "phone_code": str(phone_code),
+                "phone_code_hash": str(
+                    phone_code_hash
+                ),
+                "phone_code": str(
+                    phone_code
+                ),
                 "public_key": public_key_b64,
             },
             tmp_session=tmp_session,
@@ -179,8 +204,8 @@ class AuthManager:
 
         if not auth:
             raise AuthenticationError(
-                "Login succeeded but auth was not returned: "
-                f"{data}"
+                "Login succeeded but auth "
+                "was not returned."
             )
 
         user_guid = self._find_value(
