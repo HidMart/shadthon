@@ -1,14 +1,11 @@
 from .client import Client
-from .models import Message, User, Chat
-from .exceptions import ShadthonError
+from .models import User, Chat, Message
 
 __version__ = "0.1.0"
 
 __all__ = [
     "Client",
-    "Message",
     "User",
     "Chat",
-    "ShadthonError",
-    "__version__",
+    "Message",
 ]
