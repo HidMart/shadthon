@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import json
 
 import aiohttp
@@ -6,90 +8,45 @@ from .crypto import Crypto
 from .exceptions import APIError, NetworkError
 
 
+CLIENT_META = {
+    "app_name": "Main",
+    "app_version": "4.4.26",
+    "platform": "Web",
+    "package": "web.shad.ir",
+    "lang_code": "fa",
+}
+
+
 class Transport:
     def __init__(
         self,
-        base_url,
-        auth=None,
-        private_key=None,
+        session,
         timeout=30,
     ):
-        self.base_url = base_url.rstrip("/")
-        self.auth = auth
-        self.private_key = private_key
+        self.session = session
         self.timeout = timeout
 
-    async def request(
-        self,
-        method,
-        input_data=None,
-        *,
-        tmp_session=None,
-        authenticated=None,
-        client_info=None,
-    ):
-        inner = {
-            "method": method,
-            "input": input_data or {},
-            "client": client_info or {
-                "app_name": "Main",
-                "app_version": "3.7.9",
-                "lang_code": "fa",
-                "package": "ir.medu.shad",
-                "platform": "Android",
-            },
-        }
-
-        inner_json = json.dumps(
-            inner,
+    async def _post(self, payload):
+        body = json.dumps(
+            payload,
             ensure_ascii=False,
             separators=(",", ":"),
+        ).encode("utf-8")
+
+        url = self.session.get_base_url()
+
+        timeout = aiohttp.ClientTimeout(
+            total=self.timeout
         )
-
-        key = (
-            self.auth
-            if authenticated
-            else tmp_session
-        )
-
-        if not key:
-            raise APIError(
-                "No encryption key available"
-            )
-
-        data_enc = Crypto.encrypt(
-            key,
-            inner_json,
-        )
-
-        payload = {
-            "api_version": 6,
-            "data_enc": data_enc,
-        }
-
-        if authenticated:
-            payload["auth"] = self.auth
-
-            if self.private_key:
-                payload["sign"] = Crypto.sign_rsa(
-                    self.private_key,
-                    data_enc,
-                )
-        else:
-            payload["tmp_session"] = tmp_session
 
         try:
-            timeout = aiohttp.ClientTimeout(
-                total=self.timeout
-            )
-
             async with aiohttp.ClientSession(
                 timeout=timeout
-            ) as session:
+            ) as http:
 
-                async with session.post(
-                    self.base_url + "/",
-                    json=payload,
+                async with http.post(
+                    url,
+                    data=body,
                     headers={
                         "Content-Type":
                             "application/json",
@@ -100,54 +57,256 @@ class Transport:
 
                     try:
                         result = json.loads(text)
-                    except json.JSONDecodeError:
+                    except json.JSONDecodeError as exc:
                         raise APIError(
                             f"Invalid JSON response: {text[:500]}"
-                        )
+                        ) from exc
 
                     if response.status >= 400:
                         raise APIError(
-                            f"HTTP {response.status}: "
-                            f"{result}"
+                            f"HTTP {response.status}: {result}"
                         )
 
-                    return await self._decode_response(
-                        result,
-                        key,
-                    )
+                    return result
 
         except aiohttp.ClientError as exc:
             raise NetworkError(
                 str(exc)
             ) from exc
 
+    def _build_inner(
+        self,
+        method,
+        input_data,
+    ):
+        return json.dumps(
+            {
+                "client": CLIENT_META,
+                "method": method,
+                "input": input_data or {},
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+
+    async def send_authenticated(
+        self,
+        method,
+        input_data=None,
+    ):
+        if not self.session.has_auth():
+            raise APIError(
+                "Authenticated session is not available."
+            )
+
+        raw = self._build_inner(
+            method,
+            input_data,
+        )
+
+        data_enc = Crypto.encrypt_payload(
+            self.session.get_key(),
+            raw,
+            self.session.get_iv(),
+        )
+
+        auth = (
+            self.session.decode_auth
+            or Crypto.decode_auth(
+                self.session.auth
+            )
+        )
+
+        payload = {
+            "api_version": "6",
+            "auth": auth,
+            "data_enc": data_enc,
+        }
+
+        if self.session.private_key:
+            payload["sign"] = Crypto.sign_rsa(
+                self.session.private_key,
+                data_enc,
+            )
+        else:
+            payload["sign"] = Crypto.compute_sign(
+                self.session.get_key(),
+                data_enc,
+            )
+
+        response = await self._post(
+            payload
+        )
+
+        return await self._decode_response(
+            response
+        )
+
+    async def send_handshake(
+        self,
+        method,
+        input_data=None,
+    ):
+        if not self.session.tmp_session:
+            raise APIError(
+                "Temporary session is not available."
+            )
+
+        raw = self._build_inner(
+            method,
+            input_data,
+        )
+
+        key = Crypto.derive_session_key(
+            self.session.tmp_session
+        )
+
+        data_enc = Crypto.encrypt_payload(
+            key,
+            raw,
+            b"\x00" * 16,
+        )
+
+        payload = {
+            "api_version": "6",
+            "tmp_session":
+                self.session.tmp_session,
+            "data_enc": data_enc,
+        }
+
+        response = await self._post(
+            payload
+        )
+
+        return await self._decode_response(
+            response,
+            handshake=True,
+        )
+
+    async def send_initial(
+        self,
+        method,
+        input_data=None,
+    ):
+        raw = self._build_inner(
+            method,
+            input_data,
+        )
+
+        if self.session.tmp_session:
+            key = Crypto.derive_session_key(
+                self.session.tmp_session
+            )
+        else:
+            raise APIError(
+                "Temporary session is not available."
+            )
+
+        data_enc = Crypto.encrypt_payload(
+            key,
+            raw,
+        )
+
+        response = await self._post(
+            {
+                "api_version": "6",
+                "data_enc": data_enc,
+            }
+        )
+
+        return await self._decode_response(
+            response,
+            handshake=True,
+        )
+
     async def _decode_response(
         self,
         result,
-        key,
+        handshake=False,
     ):
         if not isinstance(result, dict):
             return result
 
-        if "data_enc" not in result:
-            return result
+        data_enc = result.get("data_enc")
 
-        encrypted = result["data_enc"]
+        if not data_enc:
+            return result
 
         try:
-            decrypted = Crypto.decrypt(
-                key,
-                encrypted,
-            )
+            if handshake:
+                if not self.session.tmp_session:
+                    return result
 
-            data = json.loads(
-                decrypted
-            )
+                key = Crypto.derive_session_key(
+                    self.session.tmp_session
+                )
 
-            return {
-                **result,
-                "data": data,
-            }
+                raw = Crypto.decrypt_payload(
+                    key,
+                    data_enc,
+                )
+
+            else:
+                raw = Crypto.decrypt_payload(
+                    self.session.get_key(),
+                    data_enc,
+                    self.session.get_iv(),
+                )
 
         except Exception:
+            if (
+                handshake
+                and self.session.tmp_session
+            ):
+                raw, key, iv = (
+                    Crypto.decrypt_payload_probe(
+                        self.session.tmp_session,
+                        data_enc,
+                    )
+                )
+
+                self.session.set_key(key)
+                self.session.set_iv(iv)
+                self.session.save()
+
+            else:
+                return result
+
+        try:
+            decoded = json.loads(
+                raw.decode("utf-8")
+            )
+        except Exception:
             return result
+
+        if isinstance(decoded, dict):
+            return {
+                **result,
+                "data": decoded,
+            }
+
+        return {
+            **result,
+            "data": decoded,
+        }
+
+    async def request(
+        self,
+        method,
+        input_data=None,
+        *,
+        authenticated=True,
+    ):
+        if authenticated:
+            return await self.send_authenticated(
+                method,
+                input_data,
+            )
+
+        return await self.send_handshake(
+            method,
+            input_data,
+        )
+
+    async def close(self):
+        return None
