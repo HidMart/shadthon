@@ -21,15 +21,15 @@ class Transport:
         self.private_key = private_key
         self.timeout = timeout
 
-    def _get_auth_key(self):
+    def _authenticated_key(self):
         if not self.auth:
             raise APIError(
                 "No authentication key available"
             )
 
-        return Crypto.derive_session_key(
-            str(self.auth)
-        )
+        auth = str(self.auth)
+
+        return Crypto.derive_session_key(auth)
 
     async def request(
         self,
@@ -68,7 +68,7 @@ class Transport:
 
             auth_value = str(self.auth)
 
-            key = self._get_auth_key()
+            key = self._authenticated_key()
 
         else:
             if not tmp_session:
@@ -108,7 +108,9 @@ class Transport:
         else:
             payload = {
                 "api_version": "6",
-                "tmp_session": tmp_session,
+                "tmp_session": str(
+                    tmp_session
+                ),
                 "data_enc": data_enc,
             }
 
