@@ -2,7 +2,7 @@ class ShadthonError(Exception):
     pass
 
 
-class AuthenticationError(ShadthonError):
+class APIError(ShadthonError):
     pass
 
 
@@ -10,9 +10,5 @@ class NetworkError(ShadthonError):
     pass
 
 
-class APIError(ShadthonError):
-    pass
-
-
-class SessionError(ShadthonError):
+class AuthenticationError(ShadthonError):
     pass
