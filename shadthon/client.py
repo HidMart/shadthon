@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-
 from .auth import AuthManager
 from .dispatcher import Dispatcher
 from .models import Message
@@ -37,18 +36,15 @@ class Client:
             self.session.messenger_host = host
 
         self.transport = Transport(self.session)
-
         self.methods = Methods(
             self.session,
             self.transport,
             client=self,
         )
-
         self.auth_manager = AuthManager(
             self.transport,
             self.session,
         )
-
         self.dispatcher = Dispatcher(self)
 
     @property
@@ -83,53 +79,19 @@ class Client:
             phone_code_hash,
         )
 
-        try:
-            register_result = await self.methods.register_device()
-
-            register_data = register_result.get(
-                "data",
-                register_result,
-            )
-
-            register_status = register_data.get("status")
-
-            if register_status not in (
-                None,
-                "OK",
-                "SUCCESS",
-            ):
-                raise RuntimeError(
-                    f"registerDevice failed: {register_data}"
-                )
-
-            self.session.data["device_registered"] = True
-            self.session.save()
-
-        except Exception:
-            self.session.data["device_registered"] = False
-            self.session.save()
-            raise
-
         return result
 
     async def register_device(self):
-        result = await self.methods.register_device()
-
-        data = result.get("data", result)
-        status = data.get("status")
-
-        if status not in (None, "OK", "SUCCESS"):
+        if not self.authenticated:
             raise RuntimeError(
-                f"registerDevice failed: {data}"
+                "Client is not authenticated."
             )
 
-        self.session.data["device_registered"] = True
-        self.session.save()
-
-        return result
+        return await self.methods.register_device()
 
     def on_message(self, handler=None):
         if handler is None:
+
             def decorator(func):
                 self.dispatcher.register_handler(func)
                 return func
