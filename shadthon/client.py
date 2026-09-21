@@ -1,10 +1,13 @@
+from __future__ import annotations
+
 import asyncio
 
 from .auth import AuthManager
+from .dispatcher import Dispatcher
 from .models import Message
 from .session import Session
 from .transport import Transport
-from .websocket import ShadWebSocket
+from .methods import Methods
 
 
 class Client:
@@ -12,9 +15,7 @@ class Client:
         self,
         session_name="default",
         phone=None,
-        base_url="https://shadmessenger36.iranlms.ir",
-        socket_url=None,
-        auth=None,
+        base_url=None,
         session=None,
     ):
         self.session = (
@@ -25,21 +26,33 @@ class Client:
 
         if phone:
             self.session.data[
-                "phone"
+                "phone_number"
             ] = phone
 
-        self.base_url = base_url
-        self.socket_url = socket_url
+        if base_url:
+            host = (
+                base_url
+                .replace(
+                    "https://",
+                    "",
+                )
+                .replace(
+                    "http://",
+                    "",
+                )
+                .rstrip("/")
+            )
 
-        self.auth = auth or self.session.auth
-        self.private_key = (
-            self.session.private_key
-        )
+            self.session.messenger_host = host
 
         self.transport = Transport(
-            base_url=self.base_url,
-            auth=self.auth,
-            private_key=self.private_key,
+            self.session
+        )
+
+        self.methods = Methods(
+            self.session,
+            self.transport,
+            client=self,
         )
 
         self.auth_manager = AuthManager(
@@ -47,21 +60,15 @@ class Client:
             self.session,
         )
 
-        self._message_handlers = []
-        self._event_handlers = []
-
-        self.websocket = None
+        self.dispatcher = Dispatcher(
+            self
+        )
 
     @property
     def authenticated(self):
-        return bool(
-            self.session.auth
-        )
+        return self.session.authenticated
 
-    async def send_code(
-        self,
-        phone=None,
-    ):
+    async def send_code(self, phone=None):
         phone = (
             phone
             or self.session.phone
@@ -69,7 +76,7 @@ class Client:
 
         if not phone:
             raise ValueError(
-                "Phone number is required"
+                "Phone number is required."
             )
 
         return await self.auth_manager.send_code(
@@ -89,221 +96,115 @@ class Client:
 
         if not phone:
             raise ValueError(
-                "Phone number is required"
+                "Phone number is required."
             )
 
         if not phone_code:
             raise ValueError(
-                "Login code is required"
+                "Login code is required."
             )
 
         result = await self.auth_manager.sign_in(
-            phone=phone,
-            phone_code=phone_code,
-            phone_code_hash=phone_code_hash,
-        )
-
-        self.auth = self.session.auth
-        self.private_key = (
-            self.session.private_key
-        )
-
-        self.transport.auth = self.auth
-        self.transport.private_key = (
-            self.private_key
+            phone,
+            phone_code,
+            phone_code_hash,
         )
 
         return result
 
+    def on_message(self, handler=None):
+        if handler is None:
+            def decorator(func):
+                self.dispatcher.register_handler(
+                    func
+                )
+                return func
+
+            return decorator
+
+        self.dispatcher.register_handler(
+            handler
+        )
+
+        return handler
+
+    def message_from_dict(self, data):
+        return Message.from_dict(
+            data,
+            client=self,
+        )
+
     async def send_message(
         self,
         object_guid,
-        text,
+        text="",
+        reply_to_message_id=None,
+        file_inline=None,
     ):
-        if not self.authenticated:
-            raise RuntimeError(
-                "Client is not authenticated"
-            )
-
-        return await self.transport.request(
-            "sendMessage",
-            {
-                "object_guid": object_guid,
-                "text": text,
-            },
-            authenticated=True,
+        return await self.methods.send_message(
+            object_guid,
+            text,
+            reply_to_message_id,
+            file_inline,
         )
 
     async def get_messages(
         self,
         object_guid,
-        limit=20,
+        limit=50,
+        sort="FromMax",
+        max_id=None,
+        min_id=None,
     ):
-        if not self.authenticated:
-            raise RuntimeError(
-                "Client is not authenticated"
-            )
-
-        return await self.transport.request(
-            "getMessages",
-            {
-                "object_guid": object_guid,
-                "limit": limit,
-            },
-            authenticated=True,
+        return await self.methods.get_messages(
+            object_guid,
+            limit,
+            sort,
+            max_id,
+            min_id,
         )
 
-    def on_message(
+    async def get_chats_updates(
         self,
-        handler=None,
+        state=None,
     ):
-        if handler is None:
-            def decorator(func):
-                self._message_handlers.append(
-                    func
-                )
-                return func
-
-            return decorator
-
-        self._message_handlers.append(
-            handler
+        return await self.methods.get_chats_updates(
+            state
         )
 
-        return handler
-
-    def on_event(
+    async def get_messages_updates(
         self,
-        handler=None,
+        object_guid,
+        state=None,
     ):
-        if handler is None:
-            def decorator(func):
-                self._event_handlers.append(
-                    func
-                )
-                return func
-
-            return decorator
-
-        self._event_handlers.append(
-            handler
+        return await self.methods.get_messages_updates(
+            object_guid,
+            state,
         )
 
-        return handler
-
-    async def _handle_event(
+    async def get_chats(
         self,
-        event,
+        start_id=None,
     ):
-        for handler in self._event_handlers:
-            try:
-                await handler(event)
-            except Exception as exc:
-                print(
-                    "Event handler error:",
-                    exc,
-                )
-
-        message = self._message_from_event(
-            event
+        return await self.methods.get_chats(
+            start_id
         )
-
-        if message is None:
-            return
-
-        for handler in self._message_handlers:
-            try:
-                await handler(message)
-            except Exception as exc:
-                print(
-                    "Message handler error:",
-                    exc,
-                )
-
-    def _message_from_event(
-        self,
-        event,
-    ):
-        if not isinstance(event, dict):
-            return None
-
-        candidates = []
-
-        data = event.get("data")
-
-        if isinstance(data, dict):
-            candidates.append(data)
-
-            nested = data.get("message")
-
-            if isinstance(nested, dict):
-                candidates.append(nested)
-
-        candidates.append(event)
-
-        for item in candidates:
-            if not isinstance(item, dict):
-                continue
-
-            message = item.get("message")
-
-            if isinstance(message, dict):
-                item = message
-
-            text = (
-                item.get("text")
-                or item.get("message")
-            )
-
-            if text is None:
-                continue
-
-            object_guid = (
-                item.get("object_guid")
-                or item.get("objectGuid")
-            )
-
-            author_guid = (
-                item.get("author_guid")
-                or item.get("authorGuid")
-            )
-
-            message_id = (
-                item.get("message_id")
-                or item.get("messageId")
-                or item.get("id")
-            )
-
-            return Message(
-                client=self,
-                message_id=message_id,
-                text=text,
-                object_guid=object_guid,
-                author_guid=author_guid,
-                chat_id=object_guid,
-                raw=item,
-            )
-
-        return None
 
     async def start(self):
         if not self.authenticated:
             raise RuntimeError(
-                "Client is not authenticated"
+                "Client is not authenticated. "
+                "Login first."
             )
 
-        if not self.socket_url:
-            raise RuntimeError(
-                "socket_url is required for receiving messages"
-            )
+        self.dispatcher.start()
 
-        self.websocket = ShadWebSocket(
-            url=self.socket_url,
-            auth=self.auth,
-            on_event=self._handle_event,
-        )
-
-        await self.websocket.run()
+        try:
+            while self.dispatcher.running:
+                await asyncio.sleep(1)
+        except asyncio.CancelledError:
+            await self.stop()
+            raise
 
     async def run_async(self):
         await self.start()
@@ -313,6 +214,10 @@ class Client:
             self.start()
         )
 
+    async def stop(self):
+        await self.dispatcher.stop()
+        await self.transport.close()
+        self.session.save()
+
     async def close(self):
-        if self.websocket:
-            await self.websocket.close()
+        await self.stop()
