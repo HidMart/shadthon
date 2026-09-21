@@ -21,6 +21,16 @@ class Transport:
         self.private_key = private_key
         self.timeout = timeout
 
+    def _get_auth_key(self):
+        if not self.auth:
+            raise APIError(
+                "No authentication key available"
+            )
+
+        return Crypto.derive_session_key(
+            str(self.auth)
+        )
+
     async def request(
         self,
         method,
@@ -56,7 +66,9 @@ class Transport:
                     "No authentication key available"
                 )
 
-            key = self.auth
+            auth_value = str(self.auth)
+
+            key = self._get_auth_key()
 
         else:
             if not tmp_session:
@@ -65,7 +77,7 @@ class Transport:
                 )
 
             key = Crypto.derive_session_key(
-                tmp_session
+                str(tmp_session)
             )
 
         data_enc = Crypto.encrypt_payload(
@@ -73,13 +85,14 @@ class Transport:
             inner_json.encode("utf-8"),
         )
 
-        payload = {
-            "api_version": "6",
-            "data_enc": data_enc,
-        }
-
         if authenticated:
-            payload["auth"] = self.auth
+            payload = {
+                "api_version": "6",
+                "auth": Crypto.decode_auth(
+                    auth_value
+                ),
+                "data_enc": data_enc,
+            }
 
             if self.private_key:
                 payload["sign"] = Crypto.sign_rsa(
@@ -93,7 +106,11 @@ class Transport:
                 )
 
         else:
-            payload["tmp_session"] = tmp_session
+            payload = {
+                "api_version": "6",
+                "tmp_session": tmp_session,
+                "data_enc": data_enc,
+            }
 
         try:
             timeout = aiohttp.ClientTimeout(
