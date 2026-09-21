@@ -1,27 +1,37 @@
+import asyncio
+
 from shadthon import Client
 
 
 client = Client(
-    session_name="my_account",
-    socket_url="wss://shsocket14.iranlms.ir:80",
+    session_name="my_account"
 )
 
 
 @client.on_message
-async def message_handler(message):
+async def handle_message(message):
     print(
-        "MESSAGE:",
-        message.text,
+        f"[{message.chat_guid}] "
+        f"{message.author_guid}: "
+        f"{message.text}"
     )
 
+    if message.text.strip() == "سلام ربات":
+        await message.reply(
+            "روشن شد"
+        )
+
+
+async def main():
     print(
-        "GUID:",
-        message.object_guid,
+        "Shadthon 0.1.0"
+    )
+    print(
+        "Waiting for messages..."
     )
 
-    await message.reply(
-        "سلام"
-    )
+    await client.start()
 
 
-client.run()
+if __name__ == "__main__":
+    asyncio.run(main())
