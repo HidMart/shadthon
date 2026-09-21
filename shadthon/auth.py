@@ -10,36 +10,41 @@ class AuthManager:
     async def send_code(self, phone):
         tmp_session = Crypto.random_tmp_session()
 
-        result = await self.transport.request(
+        self.session.data["tmp_session"] = tmp_session
+        self.session.data["phone_number"] = phone
+        self.session.save()
+
+        result = await self.transport.send_handshake(
             "sendCode",
             {
                 "phone_number": phone,
                 "send_type": "SMS",
             },
-            tmp_session=tmp_session,
-            authenticated=False,
         )
 
-        response = result.get("data", {})
+        response = result.get(
+            "data",
+            {},
+        )
 
         if not isinstance(response, dict):
             return result
 
-        if response.get("status") != "OK":
-            return result
-
-        data = response.get("data", {})
-
-        if not isinstance(data, dict):
-            return result
-
-        self.session.data["tmp_session"] = tmp_session
-        self.session.data["phone_number"] = phone
-        self.session.data["phone_code_hash"] = data.get(
-            "phone_code_hash"
+        data = response.get(
+            "data",
+            {},
         )
 
-        self.session.save()
+        if isinstance(data, dict):
+            phone_code_hash = data.get(
+                "phone_code_hash"
+            )
+
+            if phone_code_hash:
+                self.session.data[
+                    "phone_code_hash"
+                ] = phone_code_hash
+                self.session.save()
 
         return result
 
@@ -49,64 +54,71 @@ class AuthManager:
         phone_code,
         phone_code_hash=None,
     ):
-        tmp_session = self.session.data.get(
-            "tmp_session"
+        tmp_session = (
+            self.session.tmp_session
         )
 
         if not tmp_session:
             raise AuthenticationError(
-                "Temporary session not found"
+                "Temporary session not found."
             )
 
-        if not phone_code_hash:
-            phone_code_hash = self.session.data.get(
+        phone_code_hash = (
+            phone_code_hash
+            or self.session.data.get(
                 "phone_code_hash"
             )
+        )
 
         if not phone_code_hash:
             raise AuthenticationError(
-                "phone_code_hash not found"
+                "phone_code_hash not found."
             )
 
         public_key, private_key = (
             Crypto.generate_rsa_keypair()
         )
 
-        result = await self.transport.request(
+        result = await self.transport.send_handshake(
             "signIn",
             {
                 "phone_number": phone,
-                "phone_code_hash": phone_code_hash,
+                "phone_code_hash":
+                    phone_code_hash,
                 "phone_code": phone_code,
                 "public_key": public_key,
             },
-            tmp_session=tmp_session,
-            authenticated=False,
         )
 
-        response = result.get("data", {})
+        response = result.get(
+            "data",
+            {},
+        )
 
         if not isinstance(response, dict):
             return result
 
-        if response.get("status") != "OK":
-            return result
-
-        data = response.get("data", {})
+        data = response.get(
+            "data",
+            {},
+        )
 
         if not isinstance(data, dict):
-            raise AuthenticationError(
-                "Invalid signIn response"
-            )
-
-        if data.get("status") != "OK":
             return result
 
-        encrypted_auth = data.get("auth")
+        if data.get("status") not in (
+            None,
+            "OK",
+        ):
+            return result
+
+        encrypted_auth = data.get(
+            "auth"
+        )
 
         if not encrypted_auth:
             raise AuthenticationError(
-                "Authentication token not found"
+                "Authentication token not found."
             )
 
         try:
@@ -116,16 +128,20 @@ class AuthManager:
             )
         except Exception as exc:
             raise AuthenticationError(
-                "Could not decrypt authentication token"
+                "Could not decrypt authentication token."
             ) from exc
 
-        user = data.get("user", {})
+        user = data.get(
+            "user",
+            {},
+        )
 
-        user_guid = None
+        user_guid = ""
 
         if isinstance(user, dict):
-            user_guid = user.get(
-                "user_guid"
+            user_guid = (
+                user.get("user_guid")
+                or ""
             )
 
         self.session.set_auth(
@@ -136,9 +152,16 @@ class AuthManager:
             public_key=public_key,
         )
 
-        self.session.data.pop(
-            "tmp_session",
-            None,
+        permanent_key = (
+            Crypto.derive_session_key(auth)
+        )
+
+        self.session.set_key(
+            permanent_key
+        )
+
+        self.session.set_iv(
+            b"\x00" * 16
         )
 
         self.session.data.pop(
