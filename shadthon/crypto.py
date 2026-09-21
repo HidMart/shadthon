@@ -112,8 +112,13 @@ class Crypto:
         )
 
     @staticmethod
+    def generate_tmp_session():
+        return Crypto.random_tmp_session()
+
+    @staticmethod
     def aes_encrypt(key, plaintext, iv=None):
         iv = iv or Crypto.IV
+
         cipher = AES.new(
             key,
             AES.MODE_CBC,
@@ -222,9 +227,31 @@ class Crypto:
         return RSA.import_key(raw)
 
     @staticmethod
-    def decrypt_rsa_oaep(
+    def encrypt_rsa(
+        public_key,
+        data,
+    ):
+        key = RSA.import_key(public_key)
+
+        cipher = PKCS1_OAEP.new(
+            key,
+            hashAlgo=SHA1,
+        )
+
+        encrypted = cipher.encrypt(
+            data.encode("utf-8")
+            if isinstance(data, str)
+            else data
+        )
+
+        return base64.b64encode(
+            encrypted
+        ).decode("ascii")
+
+    @staticmethod
+    def decrypt_rsa(
         private_key,
-        encrypted_data,
+        data,
     ):
         key = Crypto.load_private_key(
             private_key
@@ -235,10 +262,10 @@ class Crypto:
             hashAlgo=SHA1,
         )
 
+        encrypted = base64.b64decode(data)
+
         decrypted = cipher.decrypt(
-            base64.b64decode(
-                encrypted_data
-            )
+            encrypted
         )
 
         return decrypted.decode("utf-8")
@@ -252,9 +279,10 @@ class Crypto:
             private_key
         )
 
-        digest = SHA256.new(
-            data.encode("utf-8")
-        )
+        if isinstance(data, str):
+            data = data.encode("utf-8")
+
+        digest = SHA256.new(data)
 
         signature = pkcs1_15.new(
             key
@@ -263,67 +291,3 @@ class Crypto:
         return base64.b64encode(
             signature
         ).decode("ascii")
-
-    @staticmethod
-    def candidate_key_iv_pairs(tmp_session):
-        passphrase = Crypto.derive_passphrase(
-            tmp_session
-        ).encode("utf-8")
-
-        raw = tmp_session.encode("utf-8")
-        sha = hashlib.sha256(raw).digest()
-
-        return [
-            (
-                passphrase,
-                b"\x00" * 16,
-            ),
-            (
-                passphrase,
-                b"0" * 16,
-            ),
-            (
-                raw,
-                b"\x00" * 16,
-            ),
-            (
-                raw,
-                b"0" * 16,
-            ),
-            (
-                sha,
-                b"\x00" * 16,
-            ),
-            (
-                sha,
-                b"0" * 16,
-            ),
-        ]
-
-    @staticmethod
-    def decrypt_payload_probe(
-        tmp_session,
-        data_enc,
-    ):
-        ciphertext = base64.b64decode(
-            data_enc
-        )
-
-        for key, iv in Crypto.candidate_key_iv_pairs(
-            tmp_session
-        ):
-            try:
-                plain = Crypto.aes_decrypt(
-                    key,
-                    ciphertext,
-                    iv,
-                )
-
-                return plain, key, iv
-
-            except Exception:
-                continue
-
-        raise ValueError(
-            "Unable to decrypt payload."
-        )
