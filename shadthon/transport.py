@@ -43,12 +43,13 @@ class Transport:
             async with aiohttp.ClientSession(
                 timeout=timeout
             ) as http:
-
                 async with http.post(
                     url,
                     data=body,
                     headers={
                         "Content-Type":
+                            "application/json",
+                        "Accept":
                             "application/json",
                     },
                 ) as response:
@@ -59,12 +60,14 @@ class Transport:
                         result = json.loads(text)
                     except json.JSONDecodeError as exc:
                         raise APIError(
-                            f"Invalid JSON response: {text[:500]}"
+                            f"Invalid JSON response: "
+                            f"{text[:500]}"
                         ) from exc
 
                     if response.status >= 400:
                         raise APIError(
-                            f"HTTP {response.status}: {result}"
+                            f"HTTP {response.status}: "
+                            f"{result}"
                         )
 
                     return result
@@ -188,19 +191,19 @@ class Transport:
         method,
         input_data=None,
     ):
+        if not self.session.tmp_session:
+            raise APIError(
+                "Temporary session is not available."
+            )
+
         raw = self._build_inner(
             method,
             input_data,
         )
 
-        if self.session.tmp_session:
-            key = Crypto.derive_session_key(
-                self.session.tmp_session
-            )
-        else:
-            raise APIError(
-                "Temporary session is not available."
-            )
+        key = Crypto.derive_session_key(
+            self.session.tmp_session
+        )
 
         data_enc = Crypto.encrypt_payload(
             key,
@@ -227,7 +230,9 @@ class Transport:
         if not isinstance(result, dict):
             return result
 
-        data_enc = result.get("data_enc")
+        data_enc = result.get(
+            "data_enc"
+        )
 
         if not data_enc:
             return result
@@ -244,6 +249,7 @@ class Transport:
                 raw = Crypto.decrypt_payload(
                     key,
                     data_enc,
+                    b"\x00" * 16,
                 )
 
             else:
@@ -278,12 +284,6 @@ class Transport:
             )
         except Exception:
             return result
-
-        if isinstance(decoded, dict):
-            return {
-                **result,
-                "data": decoded,
-            }
 
         return {
             **result,
