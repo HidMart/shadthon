@@ -1,87 +1,82 @@
 from __future__ import annotations
 
 import os
-import time
-import uuid
+import random
 
 
 class Methods:
-    def __init__(self, session, transport, client=None):
-        self.session = session
+    def __init__(self, transport):
         self.transport = transport
-        self.client = client
-
-    async def send_code(self, phone):
-        return await self.transport.send_handshake(
-            "sendCode",
-            {
-                "phone_number": phone,
-                "send_type": "SMS",
-            },
-        )
-
-    async def sign_in(self, phone, phone_code, phone_code_hash):
-        return await self.transport.send_handshake(
-            "signIn",
-            {
-                "phone_number": phone,
-                "phone_code_hash": phone_code_hash,
-                "phone_code": phone_code,
-                "public_key": self.session.data.get("public_key", ""),
-            },
-        )
-
-    async def register_device(self):
-        device_hash = "".join(
-            __import__("random").choices(
-                "0123456789",
-                k=26,
-            )
-        )
-
-        data = {
-            "app_version": "WB_4.4.26",
-            "device_hash": device_hash,
-            "device_model": "Chrome 153",
-            "is_multi_account": False,
-            "lang_code": "fa",
-            "system_version": "Mac/iOS",
-            "token": "",
-            "token_type": "Web",
-        }
-
-        return await self.transport.send_authenticated(
-            "registerDevice",
-            data,
-        )
 
     async def send_message(
         self,
         object_guid,
-        text="",
+        text,
         reply_to_message_id=None,
-        file_inline=None,
     ):
         data = {
-            "object_guid": object_guid,
+            "object_guid": str(object_guid),
             "rnd": str(
                 int.from_bytes(
-                    os.urandom(4),
+                    os.urandom(8),
                     "big",
                 )
             ),
-            "text": text,
+            "text": str(text),
         }
 
-        if reply_to_message_id:
-            data["reply_to_message_id"] = reply_to_message_id
-
-        if file_inline:
-            data["file_inline"] = file_inline
+        if reply_to_message_id is not None:
+            data["reply_to_message_id"] = str(
+                reply_to_message_id
+            )
 
         return await self.transport.send_authenticated(
             "sendMessage",
             data,
+        )
+
+    async def edit_message(
+        self,
+        object_guid,
+        message_id,
+        text,
+    ):
+        return await self.transport.send_authenticated(
+            "editMessage",
+            {
+                "object_guid": str(object_guid),
+                "message_id": str(message_id),
+                "text": str(text),
+            },
+        )
+
+    async def delete_message(
+        self,
+        object_guid,
+        message_id,
+    ):
+        return await self.transport.send_authenticated(
+            "deleteMessage",
+            {
+                "object_guid": str(object_guid),
+                "message_id": str(message_id),
+            },
+        )
+
+    async def delete_messages(
+        self,
+        object_guid,
+        message_ids,
+    ):
+        return await self.transport.send_authenticated(
+            "deleteMessages",
+            {
+                "object_guid": str(object_guid),
+                "message_ids": [
+                    str(x)
+                    for x in message_ids
+                ],
+            },
         )
 
     async def get_messages(
@@ -93,26 +88,34 @@ class Methods:
         min_id=None,
     ):
         data = {
-            "object_guid": object_guid,
-            "limit": limit,
-            "sort": sort,
+            "object_guid": str(object_guid),
+            "limit": int(limit),
+            "sort": str(sort),
         }
 
         if max_id is not None:
-            data["max_id"] = max_id
+            data["max_id"] = str(max_id)
 
         if min_id is not None:
-            data["min_id"] = min_id
+            data["min_id"] = str(min_id)
 
         return await self.transport.send_authenticated(
             "getMessages",
             data,
         )
 
-    async def get_chats_updates(self, state=None):
-        if not state or state <= 0:
-            state = self.session.state or int(time.time()) - 150
+    async def get_chats(self, start_id=None):
+        data = {}
 
+        if start_id is not None:
+            data["start_id"] = str(start_id)
+
+        return await self.transport.send_authenticated(
+            "getChats",
+            data,
+        )
+
+    async def get_chats_updates(self, state=0):
         return await self.transport.send_authenticated(
             "getChatsUpdates",
             {
@@ -123,26 +126,38 @@ class Methods:
     async def get_messages_updates(
         self,
         object_guid,
-        state=None,
+        state=0,
     ):
-        if not state or state <= 0:
-            state = int(time.time()) - 150
-
         return await self.transport.send_authenticated(
             "getMessagesUpdates",
             {
-                "object_guid": object_guid,
+                "object_guid": str(object_guid),
                 "state": str(state),
             },
         )
 
-    async def get_chats(self, start_id=None):
-        data = {}
-
-        if start_id:
-            data["start_id"] = start_id
-
+    async def register_device(self):
         return await self.transport.send_authenticated(
-            "getChats",
-            data,
+            "registerDevice",
+            {
+                "app_version": "WB_4.4.26",
+                "device_hash": "".join(
+                    random.choices(
+                        "0123456789",
+                        k=26,
+                    )
+                ),
+                "device_model": "Chrome 153",
+                "is_multi_account": False,
+                "lang_code": "fa",
+                "system_version": "Mac/iOS",
+                "token": "",
+                "token_type": "Web",
+            },
+        )
+
+    async def invoke(self, method, **kwargs):
+        return await self.transport.send_authenticated(
+            method,
+            kwargs,
         )
