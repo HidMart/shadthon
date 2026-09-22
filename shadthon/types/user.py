@@ -1,3 +1,6 @@
+from __future__ import annotations
+
+
 class User:
     def __init__(
         self,
@@ -15,8 +18,8 @@ class User:
         self.username = username
         self.bio = bio
         self.phone = phone
-        self.is_verified = is_verified
-        self.raw = raw or kwargs
+        self.is_verified = bool(is_verified)
+        self.raw = raw if raw is not None else kwargs
 
     @classmethod
     def from_dict(cls, data):
@@ -40,4 +43,13 @@ class User:
                 False,
             ),
             raw=data,
+        )
+
+    def __repr__(self):
+        return (
+            f"User("
+            f"guid={self.guid!r}, "
+            f"name={self.name!r}, "
+            f"username={self.username!r}"
+            f")"
         )
