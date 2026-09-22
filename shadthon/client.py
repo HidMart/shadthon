@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 import asyncio
-import os
-import random
 
 from .auth import AuthManager
-from .models import Message
+from .dispatcher import Dispatcher
+from .methods import Methods
 from .session import Session
 from .transport import Transport
+from .types import Chat, Message, User
 
 
 class Client:
@@ -16,7 +16,6 @@ class Client:
         session_name="default",
         phone=None,
         base_url="https://shadmessenger36.iranlms.ir",
-        socket_url=None,
         auth=None,
         session=None,
     ):
@@ -29,16 +28,14 @@ class Client:
         if phone:
             self.session.data["phone"] = phone
 
-        self.base_url = base_url
-        self.socket_url = socket_url
+        self.base_url = base_url.rstrip("/")
 
         self.auth = auth or self.session.auth
-        self.private_key = self.session.private_key
 
         self.transport = Transport(
             base_url=self.base_url,
             auth=self.auth,
-            private_key=self.private_key,
+            private_key=self.session.private_key,
         )
 
         self.auth_manager = AuthManager(
@@ -46,98 +43,135 @@ class Client:
             self.session,
         )
 
-        self._message_handlers = []
-        self._event_handlers = []
+        self.methods = Methods(self.transport)
+        self.dispatcher = Dispatcher()
 
         self._running = False
-        self._chat_states = {}
-        self._message_states = {}
+        self._connected = False
+        self._poll_task = None
+        self._seen_messages = set()
+
+    @property
+    def is_connected(self):
+        return self._connected
 
     @property
     def authenticated(self):
         return bool(self.session.auth)
 
-    def _client_info(self):
-        return {
-            "app_name": "Main",
-            "app_version": "4.4.26",
-            "platform": "Web",
-            "package": "web.shad.ir",
-            "lang_code": "fa",
-        }
-
-    async def send_code(self, phone=None):
-        phone = phone or self.session.phone
-
-        if not phone:
-            raise ValueError(
-                "Phone number is required"
-            )
-
-        return await self.auth_manager.send_code(
-            phone
-        )
-
-    async def sign_in(
-        self,
-        phone=None,
-        phone_code=None,
-        phone_code_hash=None,
-    ):
-        phone = phone or self.session.phone
-
-        if not phone:
-            raise ValueError(
-                "Phone number is required"
-            )
-
-        if not phone_code:
-            raise ValueError(
-                "Login code is required"
-            )
-
-        result = await self.auth_manager.sign_in(
-            phone=phone,
-            phone_code=phone_code,
-            phone_code_hash=phone_code_hash,
-        )
-
-        self.auth = self.session.auth
-        self.private_key = self.session.private_key
-
-        self.transport.auth = self.auth
-        self.transport.private_key = self.private_key
-
-        return result
-
-    async def register_device(self):
+    async def connect(self):
         if not self.authenticated:
             raise RuntimeError(
                 "Client is not authenticated"
             )
 
-        device_hash = "".join(
-            random.choices(
-                "0123456789",
-                k=26,
-            )
+        self.transport.auth = self.session.auth
+        self.transport.private_key = (
+            self.session.private_key
         )
 
-        data = {
-            "app_version": "WB_4.4.26",
-            "device_hash": device_hash,
-            "device_model": "Chrome 153",
-            "is_multi_account": False,
-            "lang_code": "fa",
-            "system_version": "Mac/iOS",
-            "token": "",
-            "token_type": "Web",
-        }
+        self._connected = True
+        return True
 
-        return await self.transport.send_authenticated(
-            "registerDevice",
-            data,
-            client_info=self._client_info(),
+    async def disconnect(self):
+        self._running = False
+
+        if self._poll_task is not None:
+            self._poll_task.cancel()
+
+            try:
+                await self._poll_task
+            except asyncio.CancelledError:
+                pass
+
+            self._poll_task = None
+
+        self._connected = False
+        await self.transport.close()
+
+    async def start(self):
+        if not self._connected:
+            await self.connect()
+
+        self._running = True
+        await self._poll_messages()
+
+    async def start_in_background(self):
+        if not self._connected:
+            await self.connect()
+
+        if self._poll_task is None:
+            self._running = True
+            self._poll_task = asyncio.create_task(
+                self._poll_messages()
+            )
+
+        return self._poll_task
+
+    async def run_until_disconnected(self):
+        await self.start()
+
+    async def stop(self):
+        await self.disconnect()
+
+    async def get_me(self):
+        result = await self.invoke("getMe")
+        return self._to_user(result)
+
+    async def get_user_info(self, user_guid):
+        result = await self.invoke(
+            "getUserInfo",
+            user_guid=str(user_guid),
+        )
+
+        return self._to_user(result)
+
+    async def get_chats(self):
+        result = await self.methods.get_chats()
+
+        if isinstance(result, list):
+            return [
+                Chat.from_dict(
+                    item,
+                    client=self,
+                )
+                for item in result
+            ]
+
+        return result
+
+    async def get_chat_info(self, object_guid):
+        result = await self.invoke(
+            "getChatInfo",
+            object_guid=str(object_guid),
+        )
+
+        if isinstance(result, dict):
+            return Chat.from_dict(
+                result,
+                client=self,
+            )
+
+        return result
+
+    async def get_chat_history(
+        self,
+        object_guid,
+        limit=50,
+    ):
+        return await self.get_messages(
+            object_guid,
+            limit=limit,
+        )
+
+    async def get_messages(
+        self,
+        object_guid,
+        limit=50,
+    ):
+        return await self.methods.get_messages(
+            object_guid,
+            limit=limit,
         )
 
     async def send_message(
@@ -146,282 +180,173 @@ class Client:
         text,
         reply_to_message_id=None,
     ):
-        if not self.authenticated:
-            raise RuntimeError(
-                "Client is not authenticated"
-            )
-
-        if not object_guid:
-            raise ValueError(
-                "object_guid is required"
-            )
-
-        if not text:
-            raise ValueError(
-                "text is required"
-            )
-
-        data = {
-            "object_guid": str(object_guid),
-            "rnd": str(
-                int.from_bytes(
-                    os.urandom(8),
-                    "big",
-                )
-            ),
-            "text": str(text),
-        }
-
-        if reply_to_message_id is not None:
-            data["reply_to_message_id"] = str(
-                reply_to_message_id
-            )
-
-        return await self.transport.send_authenticated(
-            "sendMessage",
-            data,
-            client_info=self._client_info(),
+        return await self.methods.send_message(
+            object_guid,
+            text,
+            reply_to_message_id,
         )
 
-    async def get_messages(
+    async def edit_message(
         self,
         object_guid,
-        limit=20,
-        max_id=None,
-        min_id=None,
+        message_id,
+        text,
     ):
-        if not self.authenticated:
-            raise RuntimeError(
-                "Client is not authenticated"
-            )
-
-        if not object_guid:
-            raise ValueError(
-                "object_guid is required"
-            )
-
-        data = {
-            "object_guid": str(object_guid),
-            "limit": int(limit),
-            "sort": "FromMax",
-        }
-
-        if max_id is not None:
-            data["max_id"] = str(max_id)
-
-        if min_id is not None:
-            data["min_id"] = str(min_id)
-
-        return await self.transport.send_authenticated(
-            "getMessages",
-            data,
-            client_info=self._client_info(),
+        return await self.methods.edit_message(
+            object_guid,
+            message_id,
+            text,
         )
 
-    async def get_chats(
+    async def delete_message(
         self,
-        start_id=None,
+        object_guid,
+        message_id,
     ):
-        if not self.authenticated:
-            raise RuntimeError(
-                "Client is not authenticated"
-            )
-
-        data = {}
-
-        if start_id is not None:
-            data["start_id"] = str(start_id)
-
-        return await self.transport.send_authenticated(
-            "getChats",
-            data,
-            client_info=self._client_info(),
+        return await self.methods.delete_message(
+            object_guid,
+            message_id,
         )
 
-    async def get_chats_updates(
+    async def delete_messages(
         self,
-        state=0,
+        object_guid,
+        message_ids,
     ):
-        if not self.authenticated:
-            raise RuntimeError(
-                "Client is not authenticated"
-            )
-
-        data = {
-            "state": str(state),
-        }
-
-        return await self.transport.send_authenticated(
-            "getChatsUpdates",
-            data,
-            client_info=self._client_info(),
+        return await self.methods.delete_messages(
+            object_guid,
+            message_ids,
         )
+
+    async def upload_file(self, file):
+        raise NotImplementedError(
+            "The Shad upload protocol has not "
+            "been verified yet."
+        )
+
+    async def send_photo(
+        self,
+        object_guid,
+        photo,
+        caption="",
+        reply_to_message_id=None,
+    ):
+        uploaded = await self.upload_file(photo)
+
+        return await self.invoke(
+            "sendPhoto",
+            object_guid=str(object_guid),
+            file=uploaded,
+            caption=caption,
+            reply_to_message_id=(
+                str(reply_to_message_id)
+                if reply_to_message_id is not None
+                else None
+            ),
+        )
+
+    async def send_file(
+        self,
+        object_guid,
+        file,
+        caption="",
+        reply_to_message_id=None,
+    ):
+        uploaded = await self.upload_file(file)
+
+        return await self.invoke(
+            "sendFile",
+            object_guid=str(object_guid),
+            file=uploaded,
+            caption=caption,
+            reply_to_message_id=(
+                str(reply_to_message_id)
+                if reply_to_message_id is not None
+                else None
+            ),
+        )
+
+    async def update_profile(
+        self,
+        first_name=None,
+        last_name=None,
+        bio=None,
+    ):
+        return await self.invoke(
+            "updateProfile",
+            first_name=first_name,
+            last_name=last_name,
+            bio=bio,
+        )
+
+    async def block_user(self, user_guid):
+        return await self.invoke(
+            "blockUser",
+            user_guid=str(user_guid),
+        )
+
+    async def unblock_user(self, user_guid):
+        return await self.invoke(
+            "unblockUser",
+            user_guid=str(user_guid),
+        )
+
+    async def register_device(self):
+        return await self.methods.register_device()
+
+    async def get_chats_updates(self, state=0):
+        return await self.methods.get_chats_updates(state)
 
     async def get_messages_updates(
         self,
         object_guid,
         state=0,
     ):
-        if not self.authenticated:
-            raise RuntimeError(
-                "Client is not authenticated"
-            )
-
-        if not object_guid:
-            raise ValueError(
-                "object_guid is required"
-            )
-
-        data = {
-            "object_guid": str(object_guid),
-            "state": str(state),
-        }
-
-        return await self.transport.send_authenticated(
-            "getMessagesUpdates",
-            data,
-            client_info=self._client_info(),
+        return await self.methods.get_messages_updates(
+            object_guid,
+            state,
         )
 
-    def on_message(self, handler=None):
-        if handler is None:
-            def decorator(func):
-                self._message_handlers.append(func)
-                return func
+    async def invoke(self, method, **kwargs):
+        return await self.methods.invoke(
+            method,
+            **kwargs,
+        )
 
-            return decorator
+    def on_message(self, filter_=None):
+        def decorator(func):
+            self.dispatcher.add_handler(
+                func,
+                filter_,
+            )
+            return func
 
-        self._message_handlers.append(handler)
+        return decorator
 
-        return handler
-
-    def on_event(self, handler=None):
-        if handler is None:
-            def decorator(func):
-                self._event_handlers.append(func)
-                return func
-
-            return decorator
-
-        self._event_handlers.append(handler)
-
-        return handler
-
-    async def _call_handler(
-        self,
-        handler,
-        message,
-    ):
-        result = handler(message)
-
-        if asyncio.iscoroutine(result):
-            await result
-
-    async def _handle_message(
-        self,
-        message,
-    ):
-        for handler in list(
-            self._message_handlers
-        ):
-            try:
-                await self._call_handler(
-                    handler,
-                    message,
-                )
-            except Exception:
-                continue
-
-    async def _handle_event(
-        self,
-        event,
-    ):
-        for handler in list(
-            self._event_handlers
-        ):
-            try:
-                result = handler(event)
-
-                if asyncio.iscoroutine(result):
-                    await result
-
-            except Exception:
-                continue
-
-    def _extract_messages(
-        self,
-        result,
-    ):
-        messages = []
-
-        if not isinstance(result, dict):
-            return messages
-
-        def walk(value):
-            if isinstance(value, dict):
-                if (
-                    "message_id" in value
-                    or "messageId" in value
-                ):
-                    messages.append(value)
-
-                for item in value.values():
-                    walk(item)
-
-            elif isinstance(value, list):
-                for item in value:
-                    walk(item)
-
-        walk(result)
-
-        return messages
-
-    def _message_from_dict(
-        self,
-        data,
-    ):
-        if not isinstance(data, dict):
-            return None
-
-        try:
-            if hasattr(
-                Message,
-                "from_dict",
-            ):
-                return Message.from_dict(data)
-        except Exception:
-            pass
-
-        try:
-            return Message(**data)
-        except Exception:
-            return data
-
-    async def _poll_messages(
-        self,
-        interval=2,
-    ):
+    async def _poll_messages(self, interval=2):
         while self._running:
             try:
-                result = await self.get_chats_updates(
-                    state=0
-                )
+                result = await self.get_chats_updates()
 
-                await self._handle_event(result)
-
-                raw_messages = self._extract_messages(
-                    result
-                )
-
-                for raw in raw_messages:
-                    message = self._message_from_dict(
-                        raw
+                for raw in self._extract_messages(result):
+                    message = Message.from_dict(
+                        raw,
+                        client=self,
                     )
 
-                    if message is not None:
-                        await self._handle_message(
-                            message
-                        )
+                    key = (
+                        message.object_guid,
+                        message.id,
+                    )
+
+                    if key in self._seen_messages:
+                        continue
+
+                    self._seen_messages.add(key)
+
+                    await self.dispatcher.dispatch(
+                        message
+                    )
 
             except asyncio.CancelledError:
                 raise
@@ -431,49 +356,34 @@ class Client:
 
             await asyncio.sleep(interval)
 
-    async def start(
-        self,
-        interval=2,
-    ):
-        if not self.authenticated:
-            raise RuntimeError(
-                "Client is not authenticated"
-            )
+    def _extract_messages(self, value):
+        result = []
 
-        self._running = True
+        if isinstance(value, dict):
+            if (
+                "message_id" in value
+                or "messageId" in value
+            ):
+                result.append(value)
 
-        await self._poll_messages(
-            interval=interval
-        )
-
-    async def run_async(
-        self,
-        interval=2,
-    ):
-        await self.start(
-            interval=interval
-        )
-
-    def run(
-        self,
-        interval=2,
-    ):
-        try:
-            asyncio.run(
-                self.start(
-                    interval=interval
+            for item in value.values():
+                result.extend(
+                    self._extract_messages(item)
                 )
-            )
-        except KeyboardInterrupt:
-            self._running = False
 
-    async def stop(self):
-        self._running = False
+        elif isinstance(value, list):
+            for item in value:
+                result.extend(
+                    self._extract_messages(item)
+                )
 
-    async def close(self):
-        self._running = False
+        return result
 
-        try:
-            await self.transport.close()
-        except Exception:
-            pass
+    def _to_user(self, result):
+        if isinstance(result, User):
+            return result
+
+        if isinstance(result, dict):
+            return User.from_dict(result)
+
+        return User(raw=result)
