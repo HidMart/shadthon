@@ -1,234 +1,69 @@
 from __future__ import annotations
 
-import asyncio
-import logging
-import time
+import inspect
 
 
-logger = logging.getLogger(
-    "shadthon.dispatcher"
-)
+class Handler:
+    def __init__(
+        self,
+        callback,
+        filter_=None,
+    ):
+        self.callback = callback
+        self.filter = filter_
 
-POLL_INTERVAL = 1.5
-ERROR_BACKOFF = 5.0
-MAX_ERRORS = 10
+    async def matches(self, message):
+        if self.filter is None:
+            return True
+
+        return await self.filter.check(
+            message
+        )
+
+    async def call(self, message):
+        result = self.callback(message)
+
+        if inspect.isawaitable(result):
+            return await result
+
+        return result
 
 
 class Dispatcher:
-    def __init__(self, client):
-        self.client = client
+    def __init__(self):
         self.handlers = []
-        self.state = 0
-        self.running = False
-        self.task = None
 
-        self._seen_messages = set()
+    def add_handler(
+        self,
+        callback,
+        filter_=None,
+    ):
+        handler = Handler(
+            callback,
+            filter_,
+        )
 
-    def register_handler(self, handler):
         self.handlers.append(handler)
 
-    def start(self):
-        if self.running:
-            return
+        return callback
 
-        self.running = True
+    def remove_handler(self, callback):
+        self.handlers = [
+            handler
+            for handler in self.handlers
+            if handler.callback != callback
+        ]
 
-        self.task = asyncio.create_task(
-            self._polling_loop()
-        )
-
-    async def stop(self):
-        self.running = False
-
-        if self.task and not self.task.done():
-            self.task.cancel()
-
-            try:
-                await self.task
-            except asyncio.CancelledError:
-                pass
-
-    async def _polling_loop(self):
-        self.state = (
-            self.client.session.state
-            or int(time.time()) - 150
-        )
-
-        errors = 0
-
-        while self.running:
-            try:
-                result = await self.client.get_chats_updates(
-                    self.state
-                )
-
-                errors = 0
-
-                data = result.get(
-                    "data",
-                    result,
-                )
-
-                if not isinstance(data, dict):
-                    await asyncio.sleep(
-                        POLL_INTERVAL
-                    )
-                    continue
-
-                new_state = int(
-                    data.get("state")
-                    or data.get("new_state")
-                    or self.state
-                )
-
-                if new_state > self.state:
-                    self.state = new_state
-                    self.client.session.state = new_state
-                    self.client.session.save()
-
-                chats = data.get(
-                    "chats",
-                    [],
-                )
-
-                if isinstance(chats, list):
-                    for chat in chats:
-                        if not isinstance(
-                            chat,
-                            dict,
-                        ):
-                            continue
-
-                        message = chat.get(
-                            "last_message"
-                        )
-
-                        if message:
-                            await self._dispatch(
-                                message,
-                                chat.get(
-                                    "object_guid",
-                                    "",
-                                ),
-                            )
-
-                updates = data.get(
-                    "message_updates",
-                    [],
-                )
-
-                if isinstance(
-                    updates,
-                    list,
-                ):
-                    for item in updates:
-                        if not isinstance(
-                            item,
-                            dict,
-                        ):
-                            continue
-
-                        message = item.get(
-                            "message"
-                        )
-
-                        if message:
-                            await self._dispatch(
-                                message,
-                                item.get(
-                                    "object_guid",
-                                    "",
-                                ),
-                            )
-
-                await asyncio.sleep(
-                    POLL_INTERVAL
-                )
-
-            except asyncio.CancelledError:
-                break
-
-            except Exception as exc:
-                errors += 1
-
-                logger.error(
-                    "Polling error %d/%d: %s",
-                    errors,
-                    MAX_ERRORS,
-                    exc,
-                )
-
-                if errors >= MAX_ERRORS:
-                    self.running = False
-                    break
-
-                await asyncio.sleep(
-                    ERROR_BACKOFF
-                )
-
-    async def _dispatch(
-        self,
-        raw_message,
-        object_guid="",
-    ):
-        if not isinstance(
-            raw_message,
-            dict,
+    async def dispatch(self, message):
+        for handler in list(
+            self.handlers
         ):
-            return
-
-        raw_message = dict(
-            raw_message
-        )
-
-        if object_guid:
-            raw_message.setdefault(
-                "object_guid",
-                object_guid,
-            )
-
-        message = self.client.message_from_dict(
-            raw_message
-        )
-
-        if not message.id:
-            return
-
-        unique_id = (
-            message.chat_guid,
-            message.id,
-        )
-
-        if unique_id in self._seen_messages:
-            return
-
-        self._seen_messages.add(
-            unique_id
-        )
-
-        if len(self._seen_messages) > 5000:
-            self._seen_messages = set(
-                list(
-                    self._seen_messages
-                )[-2500:]
-            )
-
-        for handler in self.handlers:
-            asyncio.create_task(
-                self._safe_call(
-                    handler,
-                    message,
-                )
-            )
-
-    async def _safe_call(
-        self,
-        handler,
-        message,
-    ):
-        try:
-            await handler(message)
-        except Exception:
-            logger.exception(
-                "Message handler failed"
-            )
+            try:
+                if await handler.matches(
+                    message
+                ):
+                    await handler.call(
+                        message
+                    )
+            except Exception:
+                continue
