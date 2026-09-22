@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import re
 
 
@@ -10,7 +11,7 @@ class Filter:
     async def check(self, message):
         result = self.func(message)
 
-        if hasattr(result, "__await__"):
+        if inspect.isawaitable(result):
             result = await result
 
         return bool(result)
@@ -41,11 +42,7 @@ def _value(message, name, default=None):
     if isinstance(message, dict):
         return message.get(name, default)
 
-    return getattr(
-        message,
-        name,
-        default,
-    )
+    return getattr(message, name, default)
 
 
 class Filters:
@@ -57,7 +54,7 @@ class Filters:
     def text(self):
         return Filter(
             lambda message: bool(
-                _value(message, "text")
+                _value(message, "text", "")
             )
         )
 
@@ -75,7 +72,7 @@ class Filters:
         return Filter(
             lambda message: (
                 _value(message, "chat_type")
-                == "group"
+                in ("group", "supergroup")
             )
         )
 
@@ -88,11 +85,7 @@ class Filters:
             )
         )
 
-    def command(
-        self,
-        command,
-        prefixes="/",
-    ):
+    def command(self, command, prefixes="/"):
         if isinstance(prefixes, str):
             prefixes = tuple(prefixes)
 
@@ -101,18 +94,19 @@ class Filters:
         )
 
         def check(message):
-            text = _value(
-                message,
-                "text",
-                "",
-            )
+            text = _value(message, "text", "")
 
             if not isinstance(text, str):
                 return False
 
+            text = text.strip()
+
             for prefix in prefixes:
+                if text == prefix + command:
+                    return True
+
                 if text.startswith(
-                    prefix + command
+                    prefix + command + " "
                 ):
                     return True
 
@@ -122,26 +116,14 @@ class Filters:
 
     def contains(self, value):
         return Filter(
-            lambda message: (
-                str(value)
-                in str(
-                    _value(
-                        message,
-                        "text",
-                        "",
-                    )
-                )
-            )
+            lambda message: str(value)
+            in str(_value(message, "text", ""))
         )
 
     def startswith(self, value):
         return Filter(
             lambda message: str(
-                _value(
-                    message,
-                    "text",
-                    "",
-                )
+                _value(message, "text", "")
             ).startswith(value)
         )
 
@@ -167,3 +149,9 @@ class Filters:
 
 
 filters = Filters()
+
+__all__ = [
+    "Filter",
+    "Filters",
+    "filters",
+]
