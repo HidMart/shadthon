@@ -1,3 +1,6 @@
+from __future__ import annotations
+
+
 class Chat:
     def __init__(
         self,
@@ -18,14 +21,10 @@ class Chat:
         self.username = username
         self.description = description
         self.members_count = members_count
-        self.raw = raw or kwargs
+        self.raw = raw if raw is not None else kwargs
 
     @classmethod
-    def from_dict(
-        cls,
-        data,
-        client=None,
-    ):
+    def from_dict(cls, data, client=None):
         if not isinstance(data, dict):
             return cls(
                 client=client,
@@ -47,38 +46,34 @@ class Chat:
                 data.get("chat_type"),
             ),
             username=data.get("username"),
-            description=data.get(
-                "description"
-            ),
-            members_count=data.get(
-                "members_count"
-            ),
+            description=data.get("description"),
+            members_count=data.get("members_count"),
             raw=data,
         )
 
-    async def send_message(
-        self,
-        text,
-    ):
+    async def send_message(self, text):
         return await self.client.send_message(
             self.guid,
             text,
         )
 
-    async def get_messages(
-        self,
-        limit=50,
-    ):
+    async def get_messages(self, limit=50):
         return await self.client.get_messages(
             self.guid,
             limit=limit,
         )
 
-    async def get_chat_history(
-        self,
-        limit=50,
-    ):
+    async def get_chat_history(self, limit=50):
         return await self.client.get_chat_history(
             self.guid,
             limit=limit,
+        )
+
+    def __repr__(self):
+        return (
+            f"Chat("
+            f"guid={self.guid!r}, "
+            f"title={self.title!r}, "
+            f"type={self.type!r}"
+            f")"
         )
