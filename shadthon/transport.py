@@ -23,13 +23,11 @@ class Transport:
 
     def _authenticated_key(self):
         if not self.auth:
-            raise APIError(
-                "No authentication key available"
-            )
+            raise APIError("No authentication key available")
 
         auth = str(self.auth)
 
-        return Crypto.derive_session_key(auth)
+        return Crypto.make_key(auth).encode("utf-8")
 
     async def request(
         self,
@@ -62,19 +60,14 @@ class Transport:
 
         if authenticated:
             if not self.auth:
-                raise APIError(
-                    "No authentication key available"
-                )
+                raise APIError("No authentication key available")
 
             auth_value = str(self.auth)
-
             key = self._authenticated_key()
 
         else:
             if not tmp_session:
-                raise APIError(
-                    "No temporary session available"
-                )
+                raise APIError("No temporary session available")
 
             key = Crypto.derive_session_key(
                 str(tmp_session)
@@ -88,9 +81,7 @@ class Transport:
         if authenticated:
             payload = {
                 "api_version": "6",
-                "auth": Crypto.decode_auth(
-                    auth_value
-                ),
+                "auth": Crypto.decode_auth(auth_value),
                 "data_enc": data_enc,
             }
 
@@ -108,9 +99,7 @@ class Transport:
         else:
             payload = {
                 "api_version": "6",
-                "tmp_session": str(
-                    tmp_session
-                ),
+                "tmp_session": str(tmp_session),
                 "data_enc": data_enc,
             }
 
@@ -127,7 +116,7 @@ class Transport:
                     self.base_url + "/",
                     json=payload,
                     headers={
-                        "Content-Type": "application/json",
+                        "Content-Type": "application/json"
                     },
                 ) as response:
 
@@ -144,8 +133,7 @@ class Transport:
 
                     if response.status >= 400:
                         raise APIError(
-                            f"HTTP {response.status}: "
-                            f"{result}"
+                            f"HTTP {response.status}: {result}"
                         )
 
                     return await self._decode_response(
